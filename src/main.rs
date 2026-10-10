@@ -1,23 +1,64 @@
-mod db;
-mod domain;
-mod engine;
-mod etl;
-mod models;
-mod ranker;
+use std::env;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Duration;
 
-use db::memory::MemoryRepository;
-use db::repository::Repository;
-use engine::{build_ranker, EngineConfig};
-use etl::loader::load_from_path;
-use models::candidate::RecommendationContext;
-use models::co_listening::CoListeningConfig;
+use music_recommendation_system::db::memory::MemoryRepository;
+use music_recommendation_system::db::repository::Repository;
+use music_recommendation_system::engine::{EngineConfig, Weights, build_ranker};
+use music_recommendation_system::etl::loader::load_from_path;
+use music_recommendation_system::evaluation::{EvalConfig, evaluate};
+use music_recommendation_system::models::candidate::RecommendationContext;
+use music_recommendation_system::models::co_listening::CoListeningConfig;
 
 const DATA_PATH: &str = "data/sample.csv";
 
 fn main() -> Result<()> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => run_demo(),
+        Some("eval") => run_eval(args.get(1).map_or(DATA_PATH, String::as_str)),
+        Some(other) => bail!("unknown command `{other}`, available: eval [path]"),
+    }
+}
+
+/// Compares every model alone and the hybrid on a time-based split.
+fn run_eval(path: &str) -> Result<()> {
+    let mut repo = MemoryRepository::default();
+    let report = load_from_path(path, &mut repo, Duration::minutes(30))
+        .with_context(|| format!("failed to load {path}"))?;
+    println!(
+        "rows loaded: {}, skipped: {}",
+        report.rows_loaded, report.rows_skipped
+    );
+
+    let events = repo.all_events()?;
+    let eval = EvalConfig::default();
+
+    let presets = [
+        ("trends only", only(1.0, 0.0, 0.0)),
+        ("markov only", only(0.0, 1.0, 0.0)),
+        ("co-listening only", only(0.0, 0.0, 1.0)),
+        ("hybrid (default)", EngineConfig::default().weights),
+    ];
+
+    for (name, weights) in presets {
+        let engine = EngineConfig::default().with_weights(weights);
+        let result = evaluate(&events, &eval, &engine)?;
+        println!("{name:<18} {result}");
+    }
+    Ok(())
+}
+
+fn only(trends: f64, markov: f64, co_listening: f64) -> Weights {
+    Weights {
+        trends,
+        markov,
+        co_listening,
+    }
+}
+
+fn run_demo() -> Result<()> {
     let mut repo = MemoryRepository::default();
 
     let report = load_from_path(DATA_PATH, &mut repo, Duration::minutes(30))
