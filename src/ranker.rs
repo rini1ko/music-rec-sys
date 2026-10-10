@@ -63,6 +63,16 @@ impl Ranker {
         self
     }
 
+    /// Changes the weight of one model without retraining it.
+    /// Weight tuning relies on this to try many combinations quickly.
+    pub fn set_weight(&mut self, source: Source, weight: f64) {
+        for entry in &mut self.generators {
+            if entry.generator.source() == source {
+                entry.weight = weight;
+            }
+        }
+    }
+
     pub fn recommend(&self, context: &RecommendationContext, limit: usize) -> Vec<Recommendation> {
         let heard: HashSet<u32> = context.history.iter().copied().collect();
         let mut merged: HashMap<u32, Recommendation> = HashMap::new();
@@ -250,5 +260,21 @@ mod tests {
             recommendation.explain(),
             "popular right now; often played right after your last track"
         );
+    }
+    
+    #[test]
+    fn set_weight_changes_the_result_without_rebuilding() {
+        let mut ranker = Ranker::new(RankerConfig::default())
+            .with_generator(FakeGenerator::boxed(Source::Trends, &[(1, 1.0)]), 0.0);
+        let context = RecommendationContext { history: vec![] };
+
+        assert!(ranker.recommend(&context, 5).is_empty());
+
+        ranker.set_weight(Source::Trends, 1.0);
+        assert_eq!(ranker.recommend(&context, 5).len(), 1);
+
+        // a weight for a model that is not in the ranker changes nothing
+        ranker.set_weight(Source::Markov, 5.0);
+        assert!((ranker.recommend(&context, 5)[0].score - 1.0).abs() < 1e-9);
     }
 }

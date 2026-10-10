@@ -1,4 +1,5 @@
 use chrono::Duration;
+use std::fmt;
 
 use crate::db::error::DbError;
 use crate::db::repository::Repository;
@@ -13,6 +14,16 @@ pub struct Weights {
     pub trends: f64,
     pub markov: f64,
     pub co_listening: f64,
+}
+
+impl fmt::Display for Weights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "trends {:.1} / markov {:.1} / co-listening {:.1}",
+            self.trends, self.markov, self.co_listening
+        )
+    }
 }
 
 pub struct EngineConfig {
