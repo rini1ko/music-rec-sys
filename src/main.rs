@@ -11,6 +11,7 @@ use music_recommendation_system::evaluation::split::SplitMode;
 use music_recommendation_system::evaluation::tuning::tune;
 use music_recommendation_system::evaluation::{EvalConfig, Evaluator};
 use music_recommendation_system::models::candidate::RecommendationContext;
+use music_recommendation_system::models::cf::CfConfig;
 use music_recommendation_system::models::co_listening::CoListeningConfig;
 
 const DATA_PATH: &str = "data/sample.csv";
@@ -87,9 +88,34 @@ fn run_eval(options: &Options) -> Result<()> {
     let mut evaluator = prepare(options)?;
 
     let presets = [
-        ("trends only", only(1.0, 0.0, 0.0)),
-        ("markov only", only(0.0, 1.0, 0.0)),
-        ("co-listening only", only(0.0, 0.0, 1.0)),
+        (
+            "trends only",
+            Weights {
+                trends: 1.0,
+                ..Weights::ZERO
+            },
+        ),
+        (
+            "markov only",
+            Weights {
+                markov: 1.0,
+                ..Weights::ZERO
+            },
+        ),
+        (
+            "co-listening only",
+            Weights {
+                co_listening: 1.0,
+                ..Weights::ZERO
+            },
+        ),
+        (
+            "cf only",
+            Weights {
+                cf: 1.0,
+                ..Weights::ZERO
+            },
+        ),
         ("hybrid (default)", EngineConfig::default().weights),
     ];
 
@@ -125,14 +151,6 @@ fn run_tune(options: &Options) -> Result<()> {
     Ok(())
 }
 
-fn only(trends: f64, markov: f64, co_listening: f64) -> Weights {
-    Weights {
-        trends,
-        markov,
-        co_listening,
-    }
-}
-
 fn run_demo() -> Result<()> {
     let mut repo = MemoryRepository::default();
 
@@ -159,6 +177,10 @@ fn run_demo() -> Result<()> {
             min_cooccurrence: 1,
             min_jaccard: 0.0,
             ..CoListeningConfig::default()
+        },
+        cf: CfConfig {
+            min_overlap: 1,
+            ..CfConfig::default()
         },
         ..EngineConfig::default()
     };

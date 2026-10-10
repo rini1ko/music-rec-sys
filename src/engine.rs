@@ -1,10 +1,14 @@
-use chrono::Duration;
 use std::fmt;
+
+use chrono::Duration;
 
 use crate::db::error::DbError;
 use crate::db::repository::Repository;
 use crate::domain::{ListenEvent, Session};
-use crate::models::adapters::{CoListeningGenerator, MarkovGenerator, TrendsGenerator};
+use crate::models::adapters::{
+    CfGenerator, CoListeningGenerator, MarkovGenerator, TrendsGenerator,
+};
+use crate::models::cf::{CfConfig, CfModel};
 use crate::models::co_listening::{CoListeningConfig, CoListeningGraph};
 use crate::models::markov::MarkovModel;
 use crate::ranker::{Ranker, RankerConfig};
@@ -14,14 +18,25 @@ pub struct Weights {
     pub trends: f64,
     pub markov: f64,
     pub co_listening: f64,
+    pub cf: f64,
+}
+
+impl Weights {
+    /// Every model switched off. Handy as a base: `Weights { cf: 1.0, ..Weights::ZERO }`.
+    pub const ZERO: Weights = Weights {
+        trends: 0.0,
+        markov: 0.0,
+        co_listening: 0.0,
+        cf: 0.0,
+    };
 }
 
 impl fmt::Display for Weights {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "trends {:.1} / markov {:.1} / co-listening {:.1}",
-            self.trends, self.markov, self.co_listening
+            "trends {:.1} / markov {:.1} / co-listening {:.1} / cf {:.1}",
+            self.trends, self.markov, self.co_listening, self.cf
         )
     }
 }
@@ -30,6 +45,7 @@ pub struct EngineConfig {
     pub trend_window: Duration,
     pub trend_pool: usize,
     pub co_listening: CoListeningConfig,
+    pub cf: CfConfig,
     pub co_listening_recent_tracks: usize,
     pub candidates_per_source: usize,
     pub weights: Weights,
@@ -41,12 +57,14 @@ impl Default for EngineConfig {
             trend_window: Duration::days(1),
             trend_pool: 50,
             co_listening: CoListeningConfig::default(),
+            cf: CfConfig::default(),
             co_listening_recent_tracks: 5,
             candidates_per_source: 50,
             weights: Weights {
-                trends: 0.2,
-                markov: 0.5,
-                co_listening: 0.3,
+                trends: 0.1,
+                markov: 0.2,
+                co_listening: 0.4,
+                cf: 0.3,
             },
         }
     }
@@ -78,6 +96,7 @@ pub fn build_ranker_from_data(
     let markov = MarkovGenerator::new(MarkovModel::train(sessions));
     let graph = CoListeningGraph::build(sessions, &config.co_listening);
     let co_listening = CoListeningGenerator::new(graph, config.co_listening_recent_tracks);
+    let cf = CfGenerator::new(CfModel::train(events, &config.cf));
 
     Ranker::new(RankerConfig {
         candidates_per_source: config.candidates_per_source,
@@ -85,6 +104,7 @@ pub fn build_ranker_from_data(
     .with_generator(Box::new(trends), config.weights.trends)
     .with_generator(Box::new(markov), config.weights.markov)
     .with_generator(Box::new(co_listening), config.weights.co_listening)
+    .with_generator(Box::new(cf), config.weights.cf)
 }
 
 #[cfg(test)]
@@ -100,6 +120,10 @@ mod tests {
                 min_cooccurrence: 1,
                 min_jaccard: 0.0,
                 ..CoListeningConfig::default()
+            },
+            cf: CfConfig {
+                min_overlap: 1,
+                ..CfConfig::default()
             },
             ..EngineConfig::default()
         }
@@ -137,11 +161,11 @@ mod tests {
         let recommendations = ranker.recommend(&context, 5);
 
         // user 2 only heard track 1, so track 2 is the only candidate left;
-        // all three models vote for it: 0.2 + 0.5 + 0.3
+        // all four models vote for it: 0.1 + 0.2 + 0.4 + 0.3
         assert_eq!(recommendations.len(), 1);
         assert_eq!(recommendations[0].track_index, 2);
         assert!((recommendations[0].score - 1.0).abs() < 1e-9);
-        assert_eq!(recommendations[0].reasons.len(), 3);
+        assert_eq!(recommendations[0].reasons.len(), 4);
     }
 
     #[test]

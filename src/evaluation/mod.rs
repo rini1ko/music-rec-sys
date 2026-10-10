@@ -159,6 +159,7 @@ impl Evaluator {
         self.ranker.set_weight(Source::Markov, weights.markov);
         self.ranker
             .set_weight(Source::CoListening, weights.co_listening);
+        self.ranker.set_weight(Source::Cf, weights.cf);
     }
 
     /// Number of users that can be evaluated.
@@ -345,16 +346,11 @@ mod tests {
     #[test]
     fn model_weights_change_the_result() {
         let eval = global(3, 2.0 / 18.0);
-        let markov_only = lenient_engine().with_weights(Weights {
-            trends: 0.0,
+                let markov_only = lenient_engine().with_weights(Weights {
             markov: 1.0,
-            co_listening: 0.0,
+            ..Weights::ZERO
         });
-        let nothing = lenient_engine().with_weights(Weights {
-            trends: 0.0,
-            markov: 0.0,
-            co_listening: 0.0,
-        });
+        let nothing = lenient_engine().with_weights(Weights::ZERO);
 
         let with_model = evaluate(&pattern_events(), &eval, &markov_only).unwrap();
         let without = evaluate(&pattern_events(), &eval, &nothing).unwrap();
@@ -368,17 +364,12 @@ mod tests {
         let mut evaluator =
             Evaluator::new(&pattern_events(), &global(3, 2.0 / 18.0), &lenient_engine()).unwrap();
 
-        evaluator.set_weights(Weights {
-            trends: 0.0,
-            markov: 0.0,
-            co_listening: 0.0,
-        });
+        evaluator.set_weights(Weights::ZERO);
         assert_eq!(evaluator.run().ndcg, 0.0);
 
         evaluator.set_weights(Weights {
-            trends: 0.0,
             markov: 1.0,
-            co_listening: 0.0,
+            ..Weights::ZERO
         });
         assert!(evaluator.run().ndcg > 0.9);
     }

@@ -2,19 +2,24 @@ use crate::engine::Weights;
 
 use super::{EvalReport, Evaluator};
 
-/// Every combination of three weights that are multiples of `1 / steps` and
-/// add up to 1. With `steps = 10` that is 66 combinations.
+/// Every combination of four weights that are multiples of `1 / steps` and
+/// add up to 1. With `steps = 10` that is 286 combinations.
 /// Only the ratio between weights matters, so this covers every possible mix.
 pub fn weight_grid(steps: usize) -> Vec<Weights> {
+    let share = |part: usize| part as f64 / steps as f64;
+
     let mut grid = Vec::new();
     for trends in 0..=steps {
         for markov in 0..=(steps - trends) {
-            let co_listening = steps - trends - markov;
-            grid.push(Weights {
-                trends: trends as f64 / steps as f64,
-                markov: markov as f64 / steps as f64,
-                co_listening: co_listening as f64 / steps as f64,
-            });
+            for co_listening in 0..=(steps - trends - markov) {
+                let cf = steps - trends - markov - co_listening;
+                grid.push(Weights {
+                    trends: share(trends),
+                    markov: share(markov),
+                    co_listening: share(co_listening),
+                    cf: share(cf),
+                });
+            }
         }
     }
     grid
@@ -85,9 +90,9 @@ mod tests {
     #[test]
     fn grid_has_expected_size_and_every_row_sums_to_one() {
         let grid = weight_grid(10);
-        assert_eq!(grid.len(), 66);
+        assert_eq!(grid.len(), 286);
         for w in &grid {
-            assert!((w.trends + w.markov + w.co_listening - 1.0).abs() < 1e-9);
+            assert!((w.trends + w.markov + w.co_listening + w.cf - 1.0).abs() < 1e-9);
         }
     }
 
@@ -96,6 +101,7 @@ mod tests {
         let grid = weight_grid(4);
         assert!(grid.iter().any(|w| w.markov == 1.0 && w.trends == 0.0));
         assert!(grid.iter().any(|w| w.co_listening == 1.0 && w.trends == 0.0));
+        assert!(grid.iter().any(|w| w.cf == 1.0 && w.markov == 0.0));
     }
 
     /// Many users who all follow 1 -> 2 -> 3, and later users who heard 1 and 2
