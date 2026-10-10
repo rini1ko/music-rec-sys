@@ -67,45 +67,27 @@ impl Repository for SeaOrmRepository {
     }
 
     fn all_events(&self) -> Result<Vec<ListenEvent>, DbError> {
-        // same order as MemoryRepository: by user, then as inserted
-        let rows = self.runtime.block_on(
-            listen_event::Entity::find()
-                .order_by_asc(listen_event::Column::UserIndex)
-                .order_by_asc(listen_event::Column::Id)
-                .all(&self.db),
-        )?;
-        Ok(rows.into_iter().map(event_from).collect())
+        self.runtime.block_on(all_events(&self.db))
     }
 
     fn all_sessions(&self) -> Result<Vec<Session>, DbError> {
-        let rows = self.runtime.block_on(
-            session::Entity::find()
-                .order_by_asc(session::Column::Id)
-                .all(&self.db),
-        )?;
-        rows.into_iter().map(session_from).collect()
+        self.runtime.block_on(all_sessions(&self.db))
     }
 
     fn user_history(&self, user_index: u32) -> Result<Vec<u32>, DbError> {
         self.runtime.block_on(history(&self.db, user_index))
     }
 
+    fn trending(&self, window: Duration, limit: usize) -> Result<Vec<(u32, usize)>, DbError> {
+        self.runtime.block_on(trending(&self.db, window, limit))
+    }
+
     fn get_user(&self, user_index: u32) -> Result<Option<User>, DbError> {
-        let row = self
-            .runtime
-            .block_on(user::Entity::find_by_id(user_index).one(&self.db))?;
-        Ok(row.map(user_from))
+        self.runtime.block_on(find_user(&self.db, user_index))
     }
 
     fn get_track(&self, track_index: u32) -> Result<Option<Track>, DbError> {
-        let row = self
-            .runtime
-            .block_on(track::Entity::find_by_id(track_index).one(&self.db))?;
-        Ok(row.map(track_from))
-    }
-
-        fn trending(&self, window: Duration, limit: usize) -> Result<Vec<(u32, usize)>, DbError> {
-        self.runtime.block_on(trending(&self.db, window, limit))
+        self.runtime.block_on(find_track(&self.db, track_index))
     }
 
     fn counts(&self) -> Result<Counts, DbError> {
@@ -115,7 +97,7 @@ impl Repository for SeaOrmRepository {
 
 // ---------- writes ----------
 
-async fn insert_users(db: &DatabaseConnection, users: Vec<User>) -> Result<(), DbError> {
+pub(crate) async fn insert_users(db: &DatabaseConnection, users: Vec<User>) -> Result<(), DbError> {
     let txn = db.begin().await?;
 
     // the first version of a user wins: inside the batch and against stored rows
@@ -137,7 +119,7 @@ async fn insert_users(db: &DatabaseConnection, users: Vec<User>) -> Result<(), D
     Ok(())
 }
 
-async fn insert_tracks(db: &DatabaseConnection, tracks: Vec<Track>) -> Result<(), DbError> {
+pub(crate) async fn insert_tracks(db: &DatabaseConnection, tracks: Vec<Track>) -> Result<(), DbError> {
     let txn = db.begin().await?;
 
     let mut fresh: BTreeMap<u32, Track> = BTreeMap::new();
@@ -158,7 +140,7 @@ async fn insert_tracks(db: &DatabaseConnection, tracks: Vec<Track>) -> Result<()
     Ok(())
 }
 
-async fn insert_events(db: &DatabaseConnection, events: Vec<ListenEvent>) -> Result<(), DbError> {
+pub(crate) async fn insert_events(db: &DatabaseConnection, events: Vec<ListenEvent>) -> Result<(), DbError> {
     // if anything below fails, `txn` is dropped and rolled back
     let txn = db.begin().await?;
 
@@ -174,7 +156,7 @@ async fn insert_events(db: &DatabaseConnection, events: Vec<ListenEvent>) -> Res
     Ok(())
 }
 
-async fn insert_sessions(db: &DatabaseConnection, sessions: Vec<Session>) -> Result<(), DbError> {
+pub(crate) async fn insert_sessions(db: &DatabaseConnection, sessions: Vec<Session>) -> Result<(), DbError> {
     let txn = db.begin().await?;
 
     ensure_users(&txn, sessions.iter().map(|item| item.user_index).collect()).await?;
@@ -207,7 +189,7 @@ struct TrackPlays {
     plays: i64,
 }
 
-async fn trending(
+pub(crate) async fn trending(
     db: &DatabaseConnection,
     window: Duration,
     limit: usize,
@@ -241,7 +223,7 @@ async fn trending(
         .collect())
 }
 
-async fn history(db: &DatabaseConnection, user_index: u32) -> Result<Vec<u32>, DbError> {
+pub(crate) async fn history(db: &DatabaseConnection, user_index: u32) -> Result<Vec<u32>, DbError> {
     if user::Entity::find_by_id(user_index).one(db).await?.is_none() {
         return Err(DbError::UserNotFound(user_index));
     }
@@ -255,7 +237,7 @@ async fn history(db: &DatabaseConnection, user_index: u32) -> Result<Vec<u32>, D
     Ok(rows.into_iter().map(|row| row.track_index).collect())
 }
 
-async fn count_rows(db: &DatabaseConnection) -> Result<Counts, DbError> {
+pub(crate) async fn count_rows(db: &DatabaseConnection) -> Result<Counts, DbError> {
     Ok(Counts {
         users: user::Entity::find().count(db).await? as usize,
         tracks: track::Entity::find().count(db).await? as usize,
@@ -312,6 +294,44 @@ async fn ensure_tracks<C: ConnectionTrait>(conn: &C, ids: BTreeSet<u32>) -> Resu
         Some(missing) => Err(DbError::TrackNotFound(missing)),
         None => Ok(()),
     }
+}
+
+pub(crate) async fn all_events(db: &DatabaseConnection) -> Result<Vec<ListenEvent>, DbError> {
+    // same order as MemoryRepository: by user, then as inserted
+    let rows = listen_event::Entity::find()
+        .order_by_asc(listen_event::Column::UserIndex)
+        .order_by_asc(listen_event::Column::Id)
+        .all(db)
+        .await?;
+    Ok(rows.into_iter().map(event_from).collect())
+}
+
+pub(crate) async fn all_sessions(db: &DatabaseConnection) -> Result<Vec<Session>, DbError> {
+    let rows = session::Entity::find()
+        .order_by_asc(session::Column::Id)
+        .all(db)
+        .await?;
+    rows.into_iter().map(session_from).collect()
+}
+
+pub(crate) async fn find_user(
+    db: &DatabaseConnection,
+    user_index: u32,
+) -> Result<Option<User>, DbError> {
+    Ok(user::Entity::find_by_id(user_index)
+        .one(db)
+        .await?
+        .map(user_from))
+}
+
+pub(crate) async fn find_track(
+    db: &DatabaseConnection,
+    track_index: u32,
+) -> Result<Option<Track>, DbError> {
+    Ok(track::Entity::find_by_id(track_index)
+        .one(db)
+        .await?
+        .map(track_from))
 }
 
 // ---------- domain <-> table rows ----------
