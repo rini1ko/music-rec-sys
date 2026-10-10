@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use chrono::Duration;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, Set, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, FromQueryResult,
+    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use tokio::runtime::{Builder, Runtime};
 
@@ -103,6 +104,10 @@ impl Repository for SeaOrmRepository {
         Ok(row.map(track_from))
     }
 
+        fn trending(&self, window: Duration, limit: usize) -> Result<Vec<(u32, usize)>, DbError> {
+        self.runtime.block_on(trending(&self.db, window, limit))
+    }
+
     fn counts(&self) -> Result<Counts, DbError> {
         self.runtime.block_on(count_rows(&self.db))
     }
@@ -195,6 +200,46 @@ async fn insert_sessions(db: &DatabaseConnection, sessions: Vec<Session>) -> Res
 }
 
 // ---------- reads and checks ----------
+
+#[derive(FromQueryResult)]
+struct TrackPlays {
+    track_index: u32,
+    plays: i64,
+}
+
+async fn trending(
+    db: &DatabaseConnection,
+    window: Duration,
+    limit: usize,
+) -> Result<Vec<(u32, usize)>, DbError> {
+    // newest event through the timestamp index, no full scan
+    let latest = listen_event::Entity::find()
+        .order_by_desc(listen_event::Column::Timestamp)
+        .one(db)
+        .await?
+        .map(|row| row.timestamp);
+    let Some(latest) = latest else {
+        return Ok(Vec::new());
+    };
+
+    let rows = listen_event::Entity::find()
+        .select_only()
+        .column(listen_event::Column::TrackIndex)
+        .column_as(listen_event::Column::Id.count(), "plays")
+        .filter(listen_event::Column::Timestamp.gte(latest - window))
+        .group_by(listen_event::Column::TrackIndex)
+        .order_by_desc(listen_event::Column::Id.count())
+        .order_by_asc(listen_event::Column::TrackIndex)
+        .limit(limit as u64)
+        .into_model::<TrackPlays>()
+        .all(db)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.track_index, row.plays as usize))
+        .collect())
+}
 
 async fn history(db: &DatabaseConnection, user_index: u32) -> Result<Vec<u32>, DbError> {
     if user::Entity::find_by_id(user_index).one(db).await?.is_none() {
@@ -482,5 +527,19 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(DbError::from(error), DbError::Conflict(_)));
+    }
+
+    #[test]
+    fn trending_counts_back_from_the_latest_event() {
+        let mut repo = repo_with(&[1], &[1, 2, 3]);
+        repo.add_events(vec![
+            event_of(1, 1, 0),
+            event_of(1, 3, 10),
+            event_of(1, 2, 2 * 24 * 60 - 10),
+            event_of(1, 2, 2 * 24 * 60),
+        ])
+        .unwrap();
+
+        assert_eq!(repo.trending(Duration::days(1), 5), Ok(vec![(2, 2)]));
     }
 }

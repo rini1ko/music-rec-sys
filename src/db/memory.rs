@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use crate::db::error::DbError;
 use crate::db::repository::{Counts, Repository};
 use crate::domain::{ListenEvent, Session, Track, User};
+use chrono::Duration;
+
+use crate::models::trends::trending;
 
 /// Repository that keeps everything in memory. BTreeMap is used instead of
 /// HashMap so that iteration order is the same on every run.
@@ -108,6 +111,10 @@ impl Repository for MemoryRepository {
             events: self.events_by_user.values().map(Vec::len).sum(),
             sessions: self.sessions.len(),
         })
+    }
+
+    fn trending(&self, window: Duration, limit: usize) -> Result<Vec<(u32, usize)>, DbError> {
+        Ok(trending(&self.all_events()?, window, limit))
     }
 }
 

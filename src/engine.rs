@@ -79,13 +79,20 @@ impl EngineConfig {
 }
 
 /// Trains every model on the data in the repository and wires them into a ranker.
+/// Trends are counted by the repository itself, the other models need all the data.
 pub fn build_ranker(
     repo: &(impl Repository + ?Sized),
     config: &EngineConfig,
 ) -> Result<Ranker, DbError> {
     let events = repo.all_events()?;
     let sessions = repo.all_sessions()?;
-    Ok(build_ranker_from_data(&events, &sessions, config))
+    let ranked = repo.trending(config.trend_window, config.trend_pool)?;
+    Ok(assemble(
+        TrendsGenerator::from_ranked(ranked),
+        &events,
+        &sessions,
+        config,
+    ))
 }
 
 /// Same as `build_ranker`, but trains on data that is already in memory.
@@ -96,6 +103,15 @@ pub fn build_ranker_from_data(
     config: &EngineConfig,
 ) -> Ranker {
     let trends = TrendsGenerator::new(events, config.trend_window, config.trend_pool);
+    assemble(trends, events, sessions, config)
+}
+
+fn assemble(
+    trends: TrendsGenerator,
+    events: &[ListenEvent],
+    sessions: &[Session],
+    config: &EngineConfig,
+) -> Ranker {
     let markov = MarkovGenerator::new(MarkovModel::train(sessions));
     let graph = CoListeningGraph::build(sessions, &config.co_listening);
     let co_listening = CoListeningGenerator::new(graph, config.co_listening_recent_tracks);

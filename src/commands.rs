@@ -152,7 +152,8 @@ fn recommend(args: &RecommendArgs) -> Result<()> {
     let repo = open(&args.data)?;
 
     let Some(user) = repo.get_user(args.user)? else {
-        bail!("user {} is not in {}", args.user, args.data.path);
+        let source = args.data.db.as_deref().unwrap_or(&args.data.path);
+        bail!("user {} is not in {source}", args.user);
     };
 
     let config = if args.lenient {

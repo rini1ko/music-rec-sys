@@ -1,5 +1,6 @@
 use crate::db::error::DbError;
 use crate::domain::{ListenEvent, Session, Track, User};
+use chrono::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {
@@ -39,4 +40,8 @@ pub trait Repository {
     fn get_track(&self, track_index: u32) -> Result<Option<Track>, DbError>;
 
     fn counts(&self) -> Result<Counts, DbError>;
+
+    /// Most played tracks inside the window as (track_index, plays). The window
+    /// is counted back from the latest stored event, not from "now".
+    fn trending(&self, window: Duration, limit: usize) -> Result<Vec<(u32, usize)>, DbError>;
 }

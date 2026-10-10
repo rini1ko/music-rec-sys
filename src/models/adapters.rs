@@ -16,9 +16,12 @@ pub struct TrendsGenerator {
 
 impl TrendsGenerator {
     pub fn new(events: &[ListenEvent], window: Duration, pool_size: usize) -> Self {
-        TrendsGenerator {
-            ranked: trending(events, window, pool_size),
-        }
+        Self::from_ranked(trending(events, window, pool_size))
+    }
+
+    /// For a ranking that was already counted elsewhere, e.g. by the database.
+    pub fn from_ranked(ranked: Vec<(u32, usize)>) -> Self {
+        TrendsGenerator { ranked }
     }
 }
 
