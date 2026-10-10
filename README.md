@@ -23,13 +23,23 @@ CSV -> ETL -> Repository -> [Trends | Markov | Co-listening] -> Ranker -> recomm
 ## Usage
 
 ```bash
-cargo run                                              # demo on data/sample.csv
-cargo run --release -- eval data/lastfm_valid.csv      # compare the models
-cargo run --release -- tune data/lastfm_valid.csv      # search the best weights
-cargo run --release -- eval data/lastfm_valid.csv --global   # stricter global time split
+cargo run                                   # demo on data/sample.csv
+cargo run -- --help                         # all commands
+
+cargo run --release -- stats data/lastfm_valid.csv
+cargo run --release -- recommend data/lastfm_valid.csv --user 123 --top 5
+cargo run --release -- eval data/lastfm_valid.csv        # compare the models
+cargo run --release -- eval data/lastfm_valid.csv --global -k 20
+cargo run --release -- tune data/lastfm_valid.csv --steps 10
 cargo test
 ```
 
+| Command | What it does |
+|---|---|
+| `stats [PATH]` | loads a CSV and prints how many users, tracks, events and sessions it has |
+| `recommend --user N [PATH]` | recommends tracks for one user with an explanation for each |
+| `eval [PATH]` | compares every model and the hybrid on a time-based train/test split |
+| `tune [PATH]` | searches for the best model weights and checks them on other users |
 ## Data
 
 The project uses the Last.fm listening dataset collected by Òscar Celma,
