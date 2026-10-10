@@ -1,11 +1,17 @@
+pub mod docs;
 pub mod dto;
 pub mod error;
 pub mod handlers;
 pub mod state;
 
 use axum::Router;
+use axum::http::header::{CONTENT_TYPE, InvalidHeaderValue};
+use axum::http::{HeaderValue, Method};
 use axum::routing::{get, post};
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::state::AppState;
 
@@ -17,8 +23,22 @@ pub fn router(state: AppState) -> Router {
         .route("/users/{user_index}", get(handlers::user))
         .route("/model", get(handlers::model_status))
         .route("/model/retrain", post(handlers::retrain))
+        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", docs::ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Lets a browser app served from one of `origins` call the API.
+pub fn cors(origins: &[String]) -> Result<CorsLayer, InvalidHeaderValue> {
+    let origins = origins
+        .iter()
+        .map(|origin| HeaderValue::from_str(origin))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([CONTENT_TYPE]))
 }
 
 #[cfg(test)]
@@ -208,5 +228,41 @@ mod tests {
             .map(|item| item["track_index"].as_u64().unwrap())
             .collect();
         assert!(tracks.contains(&13));
+    }
+        #[tokio::test]
+    async fn openapi_document_lists_the_endpoints() {
+        let (status, body) = get_json("/api-docs/openapi.json").await;
+        assert_eq!(status, StatusCode::OK);
+        for path in [
+            "/health",
+            "/recommendations",
+            "/events",
+            "/users/{user_index}",
+            "/model",
+            "/model/retrain",
+        ] {
+            assert!(body["paths"][path].is_object(), "{path} is not documented");
+        }
+    }
+
+    #[tokio::test]
+    async fn cors_allows_the_frontend_origin() {
+        let layer = cors(&["http://localhost:5173".to_string()]).unwrap();
+        let app = router(state().await).layer(layer);
+
+        let request = Request::builder()
+            .method("OPTIONS")
+            .uri("/events")
+            .header("origin", "http://localhost:5173")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "content-type")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.headers()["access-control-allow-origin"],
+            "http://localhost:5173"
+        );
     }
 }

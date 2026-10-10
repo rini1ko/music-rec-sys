@@ -121,6 +121,13 @@ pub struct ServeArgs {
     /// Retrain the models every N minutes, 0 means only on request
     #[arg(long, default_value_t = 0)]
     pub retrain_minutes: u64,
+    
+    /// Browser origins allowed to call the API (repeat the flag for several)
+    #[arg(
+        long = "cors-origin",
+        default_values = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )]
+    pub cors_origins: Vec<String>,
 }
 
 fn at_least_one(value: &str) -> Result<usize, String> {

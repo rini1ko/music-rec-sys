@@ -2,32 +2,52 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
-use serde_json::{Value, json};
 
 use crate::api::dto::{
-    EventDto, NewEvent, RecommendQuery, RecommendationDto, RecommendationsResponse, TrackDto,
-    UserDto,
+    ErrorBody, EventDto, HealthDto, NewEvent, RecommendQuery, RecommendationDto,
+    RecommendationsResponse, TrackDto, UserDto,
 };
 use crate::api::error::ApiError;
 use crate::api::state::{AppState, ModelStatus};
 use crate::domain::ListenEvent;
 use crate::models::candidate::RecommendationContext;
 
-const RECENT_TRACKS: usize = 10;
 const MAX_TOP: usize = 100;
+const RECENT_TRACKS: usize = 10;
 
-/// Also proves that the database answers.
-pub async fn health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+/// Checks that the service is up and the database answers.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "system",
+    responses(
+        (status = 200, description = "Service and database are up", body = HealthDto),
+        (status = 503, description = "The database does not answer", body = ErrorBody),
+    )
+)]
+pub async fn health(State(state): State<AppState>) -> Result<Json<HealthDto>, ApiError> {
     let counts = state.store.counts().await?;
-    Ok(Json(json!({
-        "status": "ok",
-        "users": counts.users,
-        "tracks": counts.tracks,
-        "events": counts.events,
-        "sessions": counts.sessions,
-    })))
+    Ok(Json(HealthDto {
+        status: "ok",
+        users: counts.users,
+        tracks: counts.tracks,
+        events: counts.events,
+        sessions: counts.sessions,
+    }))
 }
 
+/// Recommends tracks for a user, with the reasons behind each one.
+#[utoipa::path(
+    get,
+    path = "/recommendations",
+    tag = "recommendations",
+    params(RecommendQuery),
+    responses(
+        (status = 200, description = "Ranked tracks, best first", body = RecommendationsResponse),
+        (status = 400, description = "`top` is out of range or `user` is missing", body = ErrorBody),
+        (status = 404, description = "No such user", body = ErrorBody),
+    )
+)]
 pub async fn recommendations(
     State(state): State<AppState>,
     Query(query): Query<RecommendQuery>,
@@ -63,6 +83,17 @@ pub async fn recommendations(
     }))
 }
 
+/// Records that a user listened to a track.
+#[utoipa::path(
+    post,
+    path = "/events",
+    tag = "events",
+    request_body = NewEvent,
+    responses(
+        (status = 201, description = "The event was stored", body = EventDto),
+        (status = 404, description = "Unknown user or track", body = ErrorBody),
+    )
+)]
 pub async fn add_event(
     State(state): State<AppState>,
     Json(new): Json<NewEvent>,
@@ -93,6 +124,17 @@ pub async fn add_event(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
+/// Profile of a user with the tracks they listened to last.
+#[utoipa::path(
+    get,
+    path = "/users/{user_index}",
+    tag = "users",
+    params(("user_index" = u32, Path, description = "Index of the user")),
+    responses(
+        (status = 200, description = "The user profile", body = UserDto),
+        (status = 404, description = "No such user", body = ErrorBody),
+    )
+)]
 pub async fn user(
     State(state): State<AppState>,
     Path(user_index): Path<u32>,
@@ -119,10 +161,27 @@ pub async fn user(
     }))
 }
 
+/// What the current models were trained on and whether a training is running.
+#[utoipa::path(
+    get,
+    path = "/model",
+    tag = "model",
+    responses((status = 200, description = "Model status", body = ModelStatus))
+)]
 pub async fn model_status(State(state): State<AppState>) -> Json<ModelStatus> {
     Json(state.status())
 }
 
+/// Starts retraining in the background. Requests keep using the old models until it ends.
+#[utoipa::path(
+    post,
+    path = "/model/retrain",
+    tag = "model",
+    responses(
+        (status = 202, description = "Training started", body = ModelStatus),
+        (status = 409, description = "Training is already running", body = ErrorBody),
+    )
+)]
 pub async fn retrain(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<ModelStatus>), ApiError> {

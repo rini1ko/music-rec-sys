@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::db::error::DbError;
 use crate::db::store::Store;
@@ -21,7 +22,7 @@ pub struct Trained {
     pub seconds: f32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ModelStatus {
     pub training: bool,
     pub trained_at: DateTime<Utc>,

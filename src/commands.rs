@@ -147,7 +147,9 @@ async fn run_server(args: &ServeArgs) -> Result<()> {
         api::state::spawn_schedule(state.clone(), every);
         tracing::info!(minutes = args.retrain_minutes, "scheduled retraining is on");
     }
-    let app = api::router(state);
+    
+    let cors = api::cors(&args.cors_origins).context("invalid --cors-origin")?;
+    let app = api::router(state).layer(cors);
 
     let listener = tokio::net::TcpListener::bind(&args.addr)
         .await
@@ -460,6 +462,7 @@ mod tests {
             log_dir: "target/logs".to_string(),
             lenient: false,
             retrain_minutes: 0,
+            cors_origins: Vec::new(),
         })
         .unwrap_err();
         assert!(error.to_string().contains("run `etl` first"));

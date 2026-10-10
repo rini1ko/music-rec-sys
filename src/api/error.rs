@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde_json::json;
+use crate::api::dto::ErrorBody;
 use tokio::task::JoinError;
 
 use crate::db::error::DbError;
@@ -55,6 +55,6 @@ impl IntoResponse for ApiError {
                 "internal error".to_string(),
             ),
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        (status, Json(ErrorBody { error: message })).into_response()
     }
 }

@@ -1,5 +1,6 @@
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::domain::Track;
 use crate::ranker::Recommendation;
@@ -8,26 +9,47 @@ fn default_top() -> usize {
     10
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HealthDto {
+    pub status: &'static str,
+    pub users: usize,
+    pub tracks: usize,
+    pub events: usize,
+    pub sessions: usize,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ErrorBody {
+    pub error: String,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct RecommendQuery {
+    /// Index of the user to recommend for.
     pub user: u32,
+    /// How many tracks to return, from 1 to 100. Default is 10.
     #[serde(default = "default_top")]
     pub top: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ReasonDto {
+    /// Machine name of the model: trends, markov, co_listening or cf.
     pub source: &'static str,
+    /// Human-readable explanation.
     pub text: &'static str,
+    /// How much this model added to the final score.
     pub contribution: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RecommendationDto {
     pub track_index: u32,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub score: f64,
+    /// Strongest reason first.
     pub reasons: Vec<ReasonDto>,
 }
 
@@ -55,14 +77,14 @@ impl RecommendationDto {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RecommendationsResponse {
     pub user: u32,
     pub history_len: usize,
     pub items: Vec<RecommendationDto>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct NewEvent {
     pub user: u32,
     pub track: u32,
@@ -70,14 +92,14 @@ pub struct NewEvent {
     pub timestamp: Option<NaiveDateTime>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct EventDto {
     pub user: u32,
     pub track: u32,
     pub timestamp: NaiveDateTime,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TrackDto {
     pub track_index: u32,
     pub title: Option<String>,
@@ -94,7 +116,7 @@ impl From<Track> for TrackDto {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UserDto {
     pub user_index: u32,
     pub gender: Option<String>,
