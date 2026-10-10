@@ -131,13 +131,23 @@ async fn run_server(args: &ServeArgs) -> Result<()> {
         EngineConfig::default()
     };
     tracing::info!("training the models");
-    let started = Instant::now();
-    let ranker = api::state::train(&store, config)
+    let trained = api::state::train(&store, config.clone())
         .await
         .context("failed to train the models")?;
-    tracing::info!(seconds = started.elapsed().as_secs_f32(), "models are ready");
+    tracing::info!(
+        seconds = trained.seconds,
+        events = trained.events,
+        sessions = trained.sessions,
+        "models are ready"
+    );
 
-    let app = api::router(AppState::new(store, ranker));
+    let state = AppState::new(store, trained, config);
+    if args.retrain_minutes > 0 {
+        let every = std::time::Duration::from_secs(args.retrain_minutes * 60);
+        api::state::spawn_schedule(state.clone(), every);
+        tracing::info!(minutes = args.retrain_minutes, "scheduled retraining is on");
+    }
+    let app = api::router(state);
 
     let listener = tokio::net::TcpListener::bind(&args.addr)
         .await
@@ -449,6 +459,7 @@ mod tests {
             addr: "127.0.0.1:0".to_string(),
             log_dir: "target/logs".to_string(),
             lenient: false,
+            retrain_minutes: 0,
         })
         .unwrap_err();
         assert!(error.to_string().contains("run `etl` first"));

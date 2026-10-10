@@ -41,9 +41,11 @@ impl fmt::Display for Weights {
     }
 }
 
+#[derive(Clone)]
 pub struct EngineConfig {
     pub trend_window: Duration,
     pub trend_pool: usize,
+    pub session_gap: Duration,
     pub co_listening: CoListeningConfig,
     pub cf: CfConfig,
     pub co_listening_recent_tracks: usize,
@@ -56,6 +58,7 @@ impl Default for EngineConfig {
         EngineConfig {
             trend_window: Duration::days(1),
             trend_pool: 50,
+            session_gap: Duration::minutes(30),
             co_listening: CoListeningConfig::default(),
             cf: CfConfig::default(),
             co_listening_recent_tracks: 5,

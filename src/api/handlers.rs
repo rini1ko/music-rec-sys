@@ -9,7 +9,7 @@ use crate::api::dto::{
     UserDto,
 };
 use crate::api::error::ApiError;
-use crate::api::state::AppState;
+use crate::api::state::{AppState, ModelStatus};
 use crate::domain::ListenEvent;
 use crate::models::candidate::RecommendationContext;
 
@@ -117,4 +117,17 @@ pub async fn user(
         history_len: history.len(),
         recent,
     }))
+}
+
+pub async fn model_status(State(state): State<AppState>) -> Json<ModelStatus> {
+    Json(state.status())
+}
+
+pub async fn retrain(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ModelStatus>), ApiError> {
+    if !state.retrain() {
+        return Err(ApiError::Conflict("training is already running".to_string()));
+    }
+    Ok((StatusCode::ACCEPTED, Json(state.status())))
 }

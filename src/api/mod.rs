@@ -15,6 +15,8 @@ pub fn router(state: AppState) -> Router {
         .route("/recommendations", get(handlers::recommendations))
         .route("/events", post(handlers::add_event))
         .route("/users/{user_index}", get(handlers::user))
+        .route("/model", get(handlers::model_status))
+        .route("/model/retrain", post(handlers::retrain))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -31,7 +33,7 @@ mod tests {
     use crate::domain::test_utils::{event_of, session_of, track, user};
     use crate::engine::EngineConfig;
 
-    async fn app() -> Router {
+    async fn state() -> AppState {
         let store = Store::open("sqlite::memory:").await.unwrap();
         store.add_users(vec![user(1), user(2)]).await.unwrap();
         store
@@ -48,13 +50,13 @@ mod tests {
             ])
             .await
             .unwrap();
-        store
-            .add_sessions(vec![session_of(1, &[10, 11]), session_of(2, &[10, 11, 12])])
-            .await
-            .unwrap();
 
-        let ranker = state::train(&store, EngineConfig::lenient()).await.unwrap();
-        router(AppState::new(store, ranker))
+        let trained = state::train(&store, EngineConfig::lenient()).await.unwrap();
+        AppState::new(store, trained, EngineConfig::lenient())
+    }
+
+    async fn app() -> Router {
+        router(state().await)
     }
 
     async fn send(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, Value) {
@@ -158,5 +160,53 @@ mod tests {
     async fn user_id_must_be_a_number() {
         let (status, _) = get_json("/users/abc").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    async fn wait_for_training(app: &Router) {
+        for _ in 0..100 {
+            let (_, status) = send(app, "GET", "/model", None).await;
+            if status["training"] == false {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("training did not finish");
+    }
+
+    #[tokio::test]
+    async fn model_status_describes_the_models() {
+        let (status, body) = get_json("/model").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["training"], false);
+        assert_eq!(body["events"], 5);
+        assert_eq!(body["sessions"], 2);
+    }
+
+    #[tokio::test]
+    async fn only_one_training_runs_at_a_time() {
+        let state = state().await;
+        assert!(state.retrain());
+        assert!(!state.retrain());
+    }
+
+    #[tokio::test]
+    async fn retraining_picks_up_new_events() {
+        let app = app().await;
+        let (_, before) = send(&app, "GET", "/recommendations?user=1&top=5", None).await;
+        assert_eq!(before["items"].as_array().unwrap().len(), 1);
+
+        send(&app, "POST", "/events", Some(r#"{"user":2,"track":13}"#)).await;
+        let (status, _) = send(&app, "POST", "/model/retrain", None).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        wait_for_training(&app).await;
+
+        let (_, after) = send(&app, "GET", "/recommendations?user=1&top=5", None).await;
+        let tracks: Vec<u64> = after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["track_index"].as_u64().unwrap())
+            .collect();
+        assert!(tracks.contains(&13));
     }
 }

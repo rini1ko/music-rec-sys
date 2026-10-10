@@ -117,6 +117,10 @@ pub struct ServeArgs {
     /// Relaxed thresholds for tiny datasets such as sample.csv
     #[arg(long)]
     pub lenient: bool,
+
+    /// Retrain the models every N minutes, 0 means only on request
+    #[arg(long, default_value_t = 0)]
+    pub retrain_minutes: u64,
 }
 
 fn at_least_one(value: &str) -> Result<usize, String> {

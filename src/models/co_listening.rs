@@ -5,6 +5,7 @@ use petgraph::visit::EdgeRef;
 
 use crate::domain::Session;
 
+#[derive(Clone)]
 pub struct CoListeningConfig {
     /// A pair of tracks needs at least this many shared sessions to get an edge.
     pub min_cooccurrence: u32,
