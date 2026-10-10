@@ -1,3 +1,4 @@
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::Track;
@@ -59,4 +60,47 @@ pub struct RecommendationsResponse {
     pub user: u32,
     pub history_len: usize,
     pub items: Vec<RecommendationDto>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewEvent {
+    pub user: u32,
+    pub track: u32,
+    /// The data lives in 2009, so "now" means right after the newest stored event.
+    pub timestamp: Option<NaiveDateTime>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventDto {
+    pub user: u32,
+    pub track: u32,
+    pub timestamp: NaiveDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrackDto {
+    pub track_index: u32,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+}
+
+impl From<Track> for TrackDto {
+    fn from(track: Track) -> Self {
+        Self {
+            track_index: track.track_index,
+            title: track.track_name,
+            artist: track.artist_name,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserDto {
+    pub user_index: u32,
+    pub gender: Option<String>,
+    pub age: Option<f32>,
+    pub country: Option<String>,
+    pub history_len: usize,
+    /// Newest first.
+    pub recent: Vec<TrackDto>,
 }

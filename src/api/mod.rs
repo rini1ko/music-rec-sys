@@ -4,7 +4,7 @@ pub mod handlers;
 pub mod state;
 
 use axum::Router;
-use axum::routing::get;
+use axum::routing::{get, post};
 use tower_http::trace::TraceLayer;
 
 use crate::api::state::AppState;
@@ -13,6 +13,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health))
         .route("/recommendations", get(handlers::recommendations))
+        .route("/events", post(handlers::add_event))
+        .route("/users/{user_index}", get(handlers::user))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -55,12 +57,21 @@ mod tests {
         router(AppState::new(store, ranker))
     }
 
-    async fn get_json(uri: &str) -> (StatusCode, Value) {
-        let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
-        let response = app().await.oneshot(request).await.unwrap();
+    async fn send(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(body.map_or_else(Body::empty, |text| Body::from(text.to_owned())))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    async fn get_json(uri: &str) -> (StatusCode, Value) {
+        send(&app().await, "GET", uri, None).await
     }
 
     #[tokio::test]
@@ -106,5 +117,46 @@ mod tests {
     async fn unknown_route_is_404() {
         let (status, _) = get_json("/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+        #[tokio::test]
+    async fn posted_event_shows_up_in_the_history() {
+        let app = app().await;
+        let (status, body) = send(&app, "POST", "/events", Some(r#"{"user":1,"track":12}"#)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["track"], 12);
+
+        let (_, user) = send(&app, "GET", "/users/1", None).await;
+        assert_eq!(user["history_len"], 3);
+        assert_eq!(user["recent"][0]["track_index"], 12);
+    }
+
+    #[tokio::test]
+    async fn event_of_an_unknown_track_is_404() {
+        let app = app().await;
+        let (status, body) = send(&app, "POST", "/events", Some(r#"{"user":1,"track":999}"#)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("999"));
+    }
+
+    #[tokio::test]
+    async fn user_profile_has_recent_tracks() {
+        let (status, body) = get_json("/users/2").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["user_index"], 2);
+        assert_eq!(body["history_len"], 3);
+        assert_eq!(body["recent"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn unknown_user_profile_is_404() {
+        let (status, _) = get_json("/users/99").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn user_id_must_be_a_number() {
+        let (status, _) = get_json("/users/abc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::Duration;
+use chrono::{Duration, NaiveDateTime};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, FromQueryResult,
     PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
@@ -200,7 +200,7 @@ pub(crate) async fn trending(
         .one(db)
         .await?
         .map(|row| row.timestamp);
-    let Some(latest) = latest else {
+    let Some(latest) = latest_event_time(db).await? else {
         return Ok(Vec::new());
     };
 
@@ -332,6 +332,17 @@ pub(crate) async fn find_track(
         .one(db)
         .await?
         .map(track_from))
+}
+
+pub(crate) async fn latest_event_time(
+    db: &DatabaseConnection,
+) -> Result<Option<NaiveDateTime>, DbError> {
+    // newest event through the timestamp index, no full scan
+    Ok(listen_event::Entity::find()
+        .order_by_desc(listen_event::Column::Timestamp)
+        .one(db)
+        .await?
+        .map(|row| row.timestamp))
 }
 
 // ---------- domain <-> table rows ----------

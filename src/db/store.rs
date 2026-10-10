@@ -1,4 +1,4 @@
-use chrono::Duration;
+use chrono::{Duration, NaiveDateTime};
 use sea_orm::DatabaseConnection;
 
 use crate::db::error::DbError;
@@ -22,6 +22,10 @@ impl Store {
         Ok(Self { db })
     }
 
+    pub async fn latest_event_time(&self) -> Result<Option<NaiveDateTime>, DbError> {
+        queries::latest_event_time(&self.db).await
+    }
+
     pub async fn add_users(&self, users: Vec<User>) -> Result<(), DbError> {
         queries::insert_users(&self.db, users).await
     }
@@ -37,7 +41,7 @@ impl Store {
     pub async fn add_sessions(&self, sessions: Vec<Session>) -> Result<(), DbError> {
         queries::insert_sessions(&self.db, sessions).await
     }
-    
+
     pub async fn all_events(&self) -> Result<Vec<ListenEvent>, DbError> {
         queries::all_events(&self.db).await
     }
