@@ -7,33 +7,84 @@ use music_recommendation_system::db::memory::MemoryRepository;
 use music_recommendation_system::db::repository::Repository;
 use music_recommendation_system::engine::{EngineConfig, Weights, build_ranker};
 use music_recommendation_system::etl::loader::load_from_path;
-use music_recommendation_system::evaluation::{EvalConfig, evaluate};
+use music_recommendation_system::evaluation::split::SplitMode;
+use music_recommendation_system::evaluation::tuning::tune;
+use music_recommendation_system::evaluation::{EvalConfig, Evaluator};
 use music_recommendation_system::models::candidate::RecommendationContext;
 use music_recommendation_system::models::co_listening::CoListeningConfig;
 
 const DATA_PATH: &str = "data/sample.csv";
+const USAGE: &str = "commands: eval [path] [--global], tune [path] [--global]";
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
+    let options = Options::parse(&args[args.len().min(1)..]);
+
     match args.first().map(String::as_str) {
         None => run_demo(),
-        Some("eval") => run_eval(args.get(1).map_or(DATA_PATH, String::as_str)),
-        Some(other) => bail!("unknown command `{other}`, available: eval [path]"),
+        Some("eval") => run_eval(&options),
+        Some("tune") => run_tune(&options),
+        Some(other) => bail!("unknown command `{other}`, {USAGE}"),
     }
 }
 
-/// Compares every model alone and the hybrid on a time-based split.
-fn run_eval(path: &str) -> Result<()> {
+struct Options {
+    path: String,
+    split: SplitMode,
+}
+
+impl Options {
+    /// `path` is the first argument that is not a flag.
+    fn parse(args: &[String]) -> Self {
+        Options {
+            path: args
+                .iter()
+                .find(|a| !a.starts_with("--"))
+                .cloned()
+                .unwrap_or_else(|| DATA_PATH.to_string()),
+            split: if args.iter().any(|a| a == "--global") {
+                SplitMode::Global
+            } else {
+                SplitMode::PerUser
+            },
+        }
+    }
+}
+
+/// Loads the CSV and prepares an evaluator: models are trained once here.
+fn prepare(options: &Options) -> Result<Evaluator> {
     let mut repo = MemoryRepository::default();
-    let report = load_from_path(path, &mut repo, Duration::minutes(30))
-        .with_context(|| format!("failed to load {path}"))?;
+    let report = load_from_path(&options.path, &mut repo, Duration::minutes(30))
+        .with_context(|| format!("failed to load {}", options.path))?;
     println!(
         "rows loaded: {}, skipped: {}",
         report.rows_loaded, report.rows_skipped
     );
 
     let events = repo.all_events()?;
-    let eval = EvalConfig::default();
+    let eval = EvalConfig {
+        split: options.split,
+        ..EvalConfig::default()
+    };
+    let evaluator = Evaluator::new(&events, &eval, &EngineConfig::default())?;
+
+    let summary = evaluator.run();
+    println!(
+        "split: {:?}, train events: {}, test events: {}",
+        options.split, summary.train_events, summary.test_events
+    );
+    println!(
+        "users evaluated: {} (skipped: {} without history, {} with nothing new)",
+        evaluator.case_count(),
+        summary.skipped_cold_start,
+        summary.skipped_nothing_new
+    );
+    Ok(evaluator)
+}
+
+/// Compares every model alone and the hybrid.
+fn run_eval(options: &Options) -> Result<()> {
+    let mut evaluator = prepare(options)?;
 
     let presets = [
         ("trends only", only(1.0, 0.0, 0.0)),
@@ -43,10 +94,34 @@ fn run_eval(path: &str) -> Result<()> {
     ];
 
     for (name, weights) in presets {
-        let engine = EngineConfig::default().with_weights(weights);
-        let result = evaluate(&events, &eval, &engine)?;
-        println!("{name:<18} {result}");
+        evaluator.set_weights(weights);
+        println!("{name:<18} {}", evaluator.run());
     }
+    Ok(())
+}
+
+/// Tries many weight combinations: picks on half of the users, checks on the other half.
+fn run_tune(options: &Options) -> Result<()> {
+    let mut evaluator = prepare(options)?;
+    let default = EngineConfig::default().weights;
+    let tuned = tune(&mut evaluator, 10, default, 5);
+
+    println!("\ntop 5 on the tuning half:");
+    for (weights, report) in &tuned.top {
+        println!("  {weights}   ndcg {:.4}  hit {:.4}", report.ndcg, report.hit_rate);
+    }
+
+    println!("\n{:<26} {:>12} {:>12}", "", "tuning half", "other half");
+    println!(
+        "{:<26} {:>12.4} {:>12.4}",
+        "default weights (ndcg)", tuned.default_tuning.ndcg, tuned.default_holdout.ndcg
+    );
+    println!(
+        "{:<26} {:>12.4} {:>12.4}",
+        "best weights (ndcg)", tuned.best_tuning.ndcg, tuned.best_holdout.ndcg
+    );
+    println!("\nbest: {}", tuned.best);
+    println!("the number in the last column is the honest one");
     Ok(())
 }
 
