@@ -1,8 +1,8 @@
 mod cli;
 mod commands;
+mod logging;
 
 use std::process::ExitCode;
-
 use clap::Parser;
 
 fn main() -> ExitCode {

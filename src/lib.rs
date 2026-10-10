@@ -5,3 +5,4 @@ pub mod etl;
 pub mod evaluation;
 pub mod models;
 pub mod ranker;
+pub mod api;

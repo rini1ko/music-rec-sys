@@ -7,6 +7,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use music_recommendation_system::db::memory::MemoryRepository;
 use music_recommendation_system::db::repository::Repository;
+use music_recommendation_system::db::store::Store;
+use music_recommendation_system::db::sea_repository::SeaOrmRepository;
 use music_recommendation_system::engine::{EngineConfig, Weights, build_ranker};
 use music_recommendation_system::evaluation::split::SplitMode;
 use music_recommendation_system::evaluation::tuning::tune;
@@ -14,10 +16,11 @@ use music_recommendation_system::evaluation::{EvalConfig, Evaluator};
 use music_recommendation_system::models::candidate::RecommendationContext;
 use music_recommendation_system::models::cf::CfConfig;
 use music_recommendation_system::models::co_listening::CoListeningConfig;
-use music_recommendation_system::db::sea_repository::SeaOrmRepository;
 use music_recommendation_system::etl::loader::{LoadReport, load_from_path, load_from_reader};
+use music_recommendation_system::api::{self, state::AppState};
 
-use crate::cli::{Command, DEFAULT_DATA, DataArgs, EtlArgs, EvalArgs, RecommendArgs, TuneArgs};
+use crate::cli::{Command, DEFAULT_DATA, DataArgs, EtlArgs, EvalArgs, RecommendArgs, TuneArgs, ServeArgs};
+use crate::logging;
 
 pub fn run(command: Option<Command>) -> Result<()> {
     match command {
@@ -27,6 +30,7 @@ pub fn run(command: Option<Command>) -> Result<()> {
         Some(Command::Eval(args)) => eval(&args),
         Some(Command::Tune(args)) => tune_weights(&args),
         Some(Command::Etl(args)) => etl(&args),
+        Some(Command::Serve(args)) => serve(&args),
     }
 }
 
@@ -107,6 +111,37 @@ fn etl(args: &EtlArgs) -> Result<()> {
         args.db, counts.users, counts.tracks, counts.events, counts.sessions
     );
     Ok(())
+}
+
+fn serve(args: &ServeArgs) -> Result<()> {
+    if !Path::new(&args.db).exists() {
+        bail!("database {} not found, run `etl` first", args.db);
+    }
+    let _log_guard = logging::init(&args.log_dir);
+
+    tokio::runtime::Runtime::new()?.block_on(run_server(args))
+}
+
+async fn run_server(args: &ServeArgs) -> Result<()> {
+    let store = Store::open(&sqlite_url(&args.db))
+        .await
+        .with_context(|| format!("failed to open {}", args.db))?;
+    let app = api::router(AppState { store });
+
+    let listener = tokio::net::TcpListener::bind(&args.addr)
+        .await
+        .with_context(|| format!("cannot listen on {}", args.addr))?;
+    tracing::info!(addr = %args.addr, db = %args.db, "server started");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("server stopped");
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn demo() -> Result<()> {
@@ -409,6 +444,17 @@ mod tests {
             db: Some("target/no-such.db".to_string()),
         };
         let error = stats(&args).unwrap_err();
+        assert!(error.to_string().contains("run `etl` first"));
+    }
+    
+    #[test]
+    fn serve_needs_an_existing_database() {
+        let error = serve(&ServeArgs {
+            db: "target/no-such.db".to_string(),
+            addr: "127.0.0.1:0".to_string(),
+            log_dir: "target/logs".to_string(),
+        })
+        .unwrap_err();
         assert!(error.to_string().contains("run `etl` first"));
     }
 }

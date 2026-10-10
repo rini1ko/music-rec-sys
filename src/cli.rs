@@ -24,6 +24,8 @@ pub enum Command {
     Tune(TuneArgs),
     /// Load a CSV file into the SQLite database
     Etl(EtlArgs),
+    /// Start the HTTP API
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -96,6 +98,21 @@ pub struct TuneArgs {
     /// How many of the best combinations to print
     #[arg(long, default_value_t = 5, value_parser = at_least_one)]
     pub show: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// SQLite database made by `etl`
+    #[arg(long, default_value = DEFAULT_DB)]
+    pub db: String,
+
+    /// Address to listen on
+    #[arg(long, default_value = "127.0.0.1:3000")]
+    pub addr: String,
+
+    /// Directory for the JSON log files
+    #[arg(long, default_value = "logs")]
+    pub log_dir: String,
 }
 
 fn at_least_one(value: &str) -> Result<usize, String> {
@@ -204,5 +221,14 @@ mod tests {
         };
         assert_eq!(args.db, DEFAULT_DB);
         assert_eq!(args.gap, 30);
+    }
+
+    #[test]
+    fn serve_has_defaults() {
+        let Some(Command::Serve(args)) = parse(&["serve"]).unwrap().command else {
+            panic!("expected the serve command");
+        };
+        assert_eq!(args.db, DEFAULT_DB);
+        assert_eq!(args.addr, "127.0.0.1:3000");
     }
 }
