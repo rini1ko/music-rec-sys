@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::Duration;
 
 use crate::domain::{ListenEvent, Session};
@@ -30,6 +32,18 @@ pub fn sessionize(mut events: Vec<ListenEvent>, gap: Duration) -> Vec<Session> {
     sessions
 }
 
+/// Takes events of ANY users, groups them by user and sessionizes each group.
+pub fn sessionize_all(events: Vec<ListenEvent>, gap: Duration) -> Vec<Session> {
+    let mut by_user: BTreeMap<u32, Vec<ListenEvent>> = BTreeMap::new();
+    for event in events {
+        by_user.entry(event.user_index).or_default().push(event);
+    }
+    by_user
+        .into_values()
+        .flat_map(|events| sessionize(events, gap))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,5 +71,19 @@ mod tests {
         let sessions = sessionize(vec![event(2, 10), event(1, 0)], Duration::minutes(30));
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].tracks, vec![1, 2]);
+    }
+
+    #[test]
+    fn sessionize_all_never_mixes_users() {
+        use crate::domain::test_utils::event_of;
+
+        let sessions = sessionize_all(
+            vec![event_of(1, 10, 0), event_of(2, 20, 1), event_of(1, 11, 2)],
+            Duration::minutes(30),
+        );
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].user_index, 1);
+        assert_eq!(sessions[0].tracks, vec![10, 11]);
+        assert_eq!(sessions[1].user_index, 2);
     }
 }

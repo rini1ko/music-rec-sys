@@ -2,11 +2,13 @@ use chrono::Duration;
 
 use crate::db::error::DbError;
 use crate::db::repository::Repository;
+use crate::domain::{ListenEvent, Session};
 use crate::models::adapters::{CoListeningGenerator, MarkovGenerator, TrendsGenerator};
 use crate::models::co_listening::{CoListeningConfig, CoListeningGraph};
 use crate::models::markov::MarkovModel;
 use crate::ranker::{Ranker, RankerConfig};
 
+#[derive(Debug, Clone, Copy)]
 pub struct Weights {
     pub trends: f64,
     pub markov: f64,
@@ -39,24 +41,39 @@ impl Default for EngineConfig {
     }
 }
 
+impl EngineConfig {
+    /// Same config with different model weights (used to compare models).
+    pub fn with_weights(mut self, weights: Weights) -> Self {
+        self.weights = weights;
+        self
+    }
+}
+
 /// Trains every model on the data in the repository and wires them into a ranker.
 pub fn build_ranker(repo: &impl Repository, config: &EngineConfig) -> Result<Ranker, DbError> {
     let events = repo.all_events()?;
     let sessions = repo.all_sessions()?;
+    Ok(build_ranker_from_data(&events, &sessions, config))
+}
 
-    let trends = TrendsGenerator::new(&events, config.trend_window, config.trend_pool);
-    let markov = MarkovGenerator::new(MarkovModel::train(&sessions));
-    let graph = CoListeningGraph::build(&sessions, &config.co_listening);
+/// Same as `build_ranker`, but trains on data that is already in memory.
+/// Evaluation uses it to train on a slice of the data without a repository.
+pub fn build_ranker_from_data(
+    events: &[ListenEvent],
+    sessions: &[Session],
+    config: &EngineConfig,
+) -> Ranker {
+    let trends = TrendsGenerator::new(events, config.trend_window, config.trend_pool);
+    let markov = MarkovGenerator::new(MarkovModel::train(sessions));
+    let graph = CoListeningGraph::build(sessions, &config.co_listening);
     let co_listening = CoListeningGenerator::new(graph, config.co_listening_recent_tracks);
 
-    let ranker = Ranker::new(RankerConfig {
+    Ranker::new(RankerConfig {
         candidates_per_source: config.candidates_per_source,
     })
     .with_generator(Box::new(trends), config.weights.trends)
     .with_generator(Box::new(markov), config.weights.markov)
-    .with_generator(Box::new(co_listening), config.weights.co_listening);
-
-    Ok(ranker)
+    .with_generator(Box::new(co_listening), config.weights.co_listening)
 }
 
 #[cfg(test)]
