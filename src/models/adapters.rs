@@ -7,6 +7,7 @@ use crate::models::candidate::{Candidate, CandidateGenerator, RecommendationCont
 use crate::models::co_listening::CoListeningGraph;
 use crate::models::markov::MarkovModel;
 use crate::models::trends::trending;
+use crate::models::cf::CfModel;
 
 /// Popular tracks. Ignores the user, so it also covers users without history.
 pub struct TrendsGenerator {
@@ -116,6 +117,31 @@ impl CandidateGenerator for CoListeningGenerator {
     }
 }
 
+/// Tracks that users with a similar listening history liked.
+pub struct CfGenerator {
+    model: CfModel,
+}
+
+impl CfGenerator {
+    pub fn new(model: CfModel) -> Self {
+        CfGenerator { model }
+    }
+}
+
+impl CandidateGenerator for CfGenerator {
+    fn source(&self) -> Source {
+        Source::Cf
+    }
+
+    fn candidates(&self, context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
+        self.model
+            .recommend(&context.history, limit)
+            .into_iter()
+            .map(|(track_index, score)| Candidate { track_index, score })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +220,25 @@ mod tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].track_index, 1);
         assert!((candidates[0].score - 2.0 / 3.0).abs() < 1e-9);
+    }
+    
+    #[test]
+    fn cf_generator_proposes_tracks_of_similar_users() {
+        use crate::domain::test_utils::event_of;
+        use crate::models::cf::CfConfig;
+
+        let events = [event_of(0, 1, 0), event_of(0, 2, 1), event_of(0, 3, 2)];
+        let config = CfConfig {
+            min_overlap: 1,
+            ..CfConfig::default()
+        };
+        let generator = CfGenerator::new(CfModel::train(&events, &config));
+
+        let candidates = generator.candidates(&context(&[1]), 10);
+
+        assert_eq!(generator.source(), Source::Cf);
+        let tracks: Vec<u32> = candidates.iter().map(|c| c.track_index).collect();
+        assert_eq!(tracks, vec![2, 3]);
+        assert!(generator.candidates(&context(&[]), 10).is_empty());
     }
 }

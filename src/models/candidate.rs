@@ -4,6 +4,7 @@ pub enum Source {
     Trends,
     Markov,
     CoListening,
+    Cf,
 }
 
 impl Source {
@@ -13,6 +14,7 @@ impl Source {
             Source::Trends => "popular right now",
             Source::Markov => "often played right after your last track",
             Source::CoListening => "often listened to together with your recent tracks",
+            Source::Cf => "people with similar taste listened to this",
         }
     }
 }
