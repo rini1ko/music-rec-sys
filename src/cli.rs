@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 
 pub const DEFAULT_DATA: &str = "data/sample.csv";
-
+pub const DEFAULT_DB: &str = "data/music.db";
 /// Hybrid music recommender trained on Last.fm listening history.
 ///
 /// Run without a command to see a small demo on data/sample.csv.
@@ -22,6 +22,8 @@ pub enum Command {
     Eval(EvalArgs),
     /// Search for the best model weights
     Tune(TuneArgs),
+    /// Load a CSV file into the SQLite database
+    Etl(EtlArgs),
 }
 
 #[derive(Debug, Args)]
@@ -29,6 +31,25 @@ pub struct DataArgs {
     /// CSV file with listening events
     #[arg(default_value = DEFAULT_DATA)]
     pub path: String,
+
+    /// Read from this SQLite database (made by `etl`) instead of the CSV
+    #[arg(long)]
+    pub db: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EtlArgs {
+    /// CSV file with listening events
+    #[arg(default_value = DEFAULT_DATA)]
+    pub path: String,
+
+    /// SQLite database file, created if missing
+    #[arg(long, default_value = DEFAULT_DB)]
+    pub db: String,
+
+    /// Minutes of silence that start a new session
+    #[arg(long, default_value_t = 30, value_parser = at_least_one)]
+    pub gap: usize,
 }
 
 #[derive(Debug, Args)]
@@ -174,5 +195,14 @@ mod tests {
     #[test]
     fn unknown_command_is_rejected() {
         assert!(parse(&["dance"]).is_err());
+    }
+    
+    #[test]
+    fn etl_has_defaults() {
+        let Some(Command::Etl(args)) = parse(&["etl"]).unwrap().command else {
+            panic!("expected the etl command");
+        };
+        assert_eq!(args.db, DEFAULT_DB);
+        assert_eq!(args.gap, 30);
     }
 }

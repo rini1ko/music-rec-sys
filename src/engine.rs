@@ -79,7 +79,10 @@ impl EngineConfig {
 }
 
 /// Trains every model on the data in the repository and wires them into a ranker.
-pub fn build_ranker(repo: &impl Repository, config: &EngineConfig) -> Result<Ranker, DbError> {
+pub fn build_ranker(
+    repo: &(impl Repository + ?Sized),
+    config: &EngineConfig,
+) -> Result<Ranker, DbError> {
     let events = repo.all_events()?;
     let sessions = repo.all_sessions()?;
     Ok(build_ranker_from_data(&events, &sessions, config))

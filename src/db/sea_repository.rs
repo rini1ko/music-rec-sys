@@ -473,4 +473,14 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn duplicate_key_is_a_conflict() {
+        let repo = repo_with(&[1], &[]);
+        let error = repo
+            .runtime
+            .block_on(user::Entity::insert(user_row(user(1))).exec(&repo.db))
+            .unwrap_err();
+
+        assert!(matches!(DbError::from(error), DbError::Conflict(_)));
+    }
 }
