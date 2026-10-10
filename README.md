@@ -65,12 +65,23 @@ try to guess what they listened to later. Only tracks the user had not heard bef
 | Trends only | 0.071 | 0.0080 |
 | Markov only | 0.101 | 0.0168 |
 | Co-listening only | 0.242 | 0.0726 |
-| Hybrid (0.2 / 0.5 / 0.3) | **0.303** | 0.0657 |
+| Collaborative filtering only | 0.303 | 0.0555 |
+| Hybrid (0.1 / 0.2 / 0.4 / 0.3) | **0.333** | **0.0896** |
 
-- The hybrid gives at least one relevant track in the top 10 to 30% of users.
-- Co-listening is about 9 times better than the popularity baseline by NDCG.
-- Weight tuning on 99 users did not generalize: weights chosen on one half of the users
-  were no better than the defaults on the other half, so the defaults are kept.
+- The hybrid gives at least one relevant track in the top 10 to 33% of users and is about 11 times better than the popularity baseline by NDCG.
+- Adding collaborative filtering raised the hybrid NDCG from 0.0657 to 0.0896.
+- Co-listening is the most precise single model (best NDCG). CF reaches the largest share of users (best hit rate) but ranks the relevant track lower. The models complement each other.
+- Weight tuning picked weights on one half of the users and checked them on the other half.
+  The tuned weights (mostly co-listening, a little CF) scored 0.0928 against 0.0875 for the defaults,
+  a small gain that is within the noise for about 50 users per half, so the defaults are kept.
+
+### Limitations
+
+- With the per-user split, models can learn from other users' later listening,
+  so the numbers are slightly optimistic. `--global` gives a stricter split.
+- Only 99 users are evaluated, so small differences between models are noise.
+- CF can only find neighbors among these 99 users; on the full dataset it would likely do better.
+- Everything is stored in memory; a SQLite repository is planned.
 
 ### Limitations
 
