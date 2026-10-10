@@ -31,6 +31,20 @@ pub struct Session {
     pub end: NaiveDateTime,
 }
 
+/// A user with the number of tracks they listened to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserSummary {
+    pub user: User,
+    pub plays: usize,
+}
+
+/// One page of users plus the total number of users.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsersPage {
+    pub total: usize,
+    pub items: Vec<UserSummary>,
+}
+
 /// Helpers shared by tests in other modules.
 #[cfg(test)]
 pub mod test_utils {

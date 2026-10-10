@@ -2,11 +2,19 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::domain::Track;
+use crate::domain::{Track, UserSummary};
 use crate::ranker::Recommendation;
 
 fn default_top() -> usize {
     10
+}
+
+fn default_users_limit() -> usize {
+    50
+}
+
+fn default_search_limit() -> usize {
+    20
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -125,4 +133,55 @@ pub struct UserDto {
     pub history_len: usize,
     /// Newest first.
     pub recent: Vec<TrackDto>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct UsersQuery {
+    /// How many users to return, from 1 to 200. Default is 50.
+    #[serde(default = "default_users_limit")]
+    pub limit: usize,
+    /// How many users to skip. Default is 0.
+    #[serde(default)]
+    pub offset: usize,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UserSummaryDto {
+    pub user_index: u32,
+    pub gender: Option<String>,
+    pub age: Option<f32>,
+    pub country: Option<String>,
+    /// How many tracks the user listened to.
+    pub plays: usize,
+}
+
+impl From<UserSummary> for UserSummaryDto {
+    fn from(summary: UserSummary) -> Self {
+        Self {
+            user_index: summary.user.user_index,
+            gender: summary.user.gender,
+            age: summary.user.age,
+            country: summary.user.country,
+            plays: summary.plays,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UsersResponse {
+    /// All users in the database, not only this page.
+    pub total: usize,
+    /// Most active first.
+    pub items: Vec<UserSummaryDto>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TrackSearchQuery {
+    /// Part of a track or artist name, at least 2 characters.
+    pub q: String,
+    /// How many tracks to return, from 1 to 50. Default is 20.
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
 }

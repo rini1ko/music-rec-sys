@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Duration, NaiveDateTime};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, FromQueryResult,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
+    RelationTrait, Set, TransactionTrait,
 };
 use tokio::runtime::{Builder, Runtime};
 
@@ -11,7 +12,7 @@ use crate::db::entities::{listen_event, session, track, user};
 use crate::db::error::DbError;
 use crate::db::repository::{Counts, Repository};
 use crate::db::schema::{connect, create_schema};
-use crate::domain::{ListenEvent, Session, Track, User};
+use crate::domain::{ListenEvent, Session, Track, User, UserSummary, UsersPage};
 
 /// Rows per INSERT / per `IN (...)` query. SQLite allows about 32k bound
 /// values in one statement and the widest table here has 4 columns.
@@ -194,12 +195,6 @@ pub(crate) async fn trending(
     window: Duration,
     limit: usize,
 ) -> Result<Vec<(u32, usize)>, DbError> {
-    // newest event through the timestamp index, no full scan
-    let latest = listen_event::Entity::find()
-        .order_by_desc(listen_event::Column::Timestamp)
-        .one(db)
-        .await?
-        .map(|row| row.timestamp);
     let Some(latest) = latest_event_time(db).await? else {
         return Ok(Vec::new());
     };
@@ -343,6 +338,75 @@ pub(crate) async fn latest_event_time(
         .one(db)
         .await?
         .map(|row| row.timestamp))
+}
+
+#[derive(FromQueryResult)]
+struct UserRow {
+    user_index: u32,
+    gender: Option<String>,
+    age: Option<f32>,
+    country: Option<String>,
+    plays: i64,
+}
+
+/// Most active users first. The join and the count read only the events index.
+pub(crate) async fn users_page(
+    db: &DatabaseConnection,
+    limit: usize,
+    offset: usize,
+) -> Result<UsersPage, DbError> {
+    let total = user::Entity::find().count(db).await? as usize;
+
+    let rows = user::Entity::find()
+        .select_only()
+        .column(user::Column::UserIndex)
+        .column(user::Column::Gender)
+        .column(user::Column::Age)
+        .column(user::Column::Country)
+        .column_as(listen_event::Column::Id.count(), "plays")
+        .join_rev(JoinType::LeftJoin, listen_event::Relation::User.def())
+        .group_by(user::Column::UserIndex)
+        .order_by_desc(listen_event::Column::Id.count())
+        .order_by_asc(user::Column::UserIndex)
+        .limit(limit as u64)
+        .offset(offset as u64)
+        .into_model::<UserRow>()
+        .all(db)
+        .await?;
+
+    let items = rows
+        .into_iter()
+        .map(|row| UserSummary {
+            user: User {
+                user_index: row.user_index,
+                gender: row.gender,
+                age: row.age,
+                country: row.country,
+            },
+            plays: row.plays as usize,
+        })
+        .collect();
+    Ok(UsersPage { total, items })
+}
+
+/// Tracks whose title or artist contains the text (SQLite LIKE ignores case for ASCII).
+pub(crate) async fn search_tracks(
+    db: &DatabaseConnection,
+    text: &str,
+    limit: usize,
+) -> Result<Vec<Track>, DbError> {
+    let rows = track::Entity::find()
+        .filter(
+            Condition::any()
+                .add(track::Column::TrackName.contains(text))
+                .add(track::Column::ArtistName.contains(text)),
+        )
+        .order_by_asc(track::Column::ArtistName)
+        .order_by_asc(track::Column::TrackName)
+        .limit(limit as u64)
+        .all(db)
+        .await?;
+    Ok(rows.into_iter().map(track_from).collect())
 }
 
 // ---------- domain <-> table rows ----------

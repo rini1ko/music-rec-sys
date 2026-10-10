@@ -5,7 +5,7 @@ use crate::db::error::DbError;
 use crate::db::repository::Counts;
 use crate::db::schema::{connect, create_schema};
 use crate::db::sea_repository as queries;
-use crate::domain::{ListenEvent, Session, Track, User};
+use crate::domain::{ListenEvent, Session, Track, User, UsersPage};
 
 /// The same database as `SeaOrmRepository`, but async, for the web server.
 /// Cloning is cheap: all clones share one connection pool.
@@ -73,13 +73,22 @@ impl Store {
     pub async fn counts(&self) -> Result<Counts, DbError> {
         queries::count_rows(&self.db).await
     }
+
+    pub async fn users_page(&self, limit: usize, offset: usize) -> Result<UsersPage, DbError> {
+        queries::users_page(&self.db, limit, offset).await
+    }
+
+    pub async fn search_tracks(&self, text: &str, limit: usize) -> Result<Vec<Track>, DbError> {
+        queries::search_tracks(&self.db, text, limit).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::test_utils::{event_of, track, user};
-
+    use crate::domain::Track;
+    
     #[tokio::test]
     async fn events_are_stored_and_read_back() {
         let store = Store::open("sqlite::memory:").await.unwrap();
@@ -101,5 +110,60 @@ mod tests {
 
         let result = store.add_events(vec![event_of(2, 10, 0)]).await;
         assert_eq!(result, Err(DbError::UserNotFound(2)));
+    }
+    
+    fn named(index: u32, title: &str, artist: &str) -> Track {
+        Track {
+            track_index: index,
+            artist_index: index,
+            track_name: Some(title.to_string()),
+            artist_name: Some(artist.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn users_come_with_play_counts_most_active_first() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store
+            .add_users(vec![user(1), user(2), user(3)])
+            .await
+            .unwrap();
+        store.add_tracks(vec![track(10), track(11)]).await.unwrap();
+        store
+            .add_events(vec![event_of(2, 10, 0), event_of(2, 11, 1), event_of(1, 10, 0)])
+            .await
+            .unwrap();
+
+        let page = store.users_page(2, 0).await.unwrap();
+        assert_eq!(page.total, 3);
+        let seen: Vec<(u32, usize)> = page
+            .items
+            .iter()
+            .map(|item| (item.user.user_index, item.plays))
+            .collect();
+        assert_eq!(seen, vec![(2, 2), (1, 1)]);
+
+        let rest = store.users_page(2, 2).await.unwrap();
+        assert_eq!(rest.items.len(), 1);
+        assert_eq!(rest.items[0].user.user_index, 3);
+        assert_eq!(rest.items[0].plays, 0);
+    }
+
+    #[tokio::test]
+    async fn tracks_are_found_by_title_or_artist() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store
+            .add_tracks(vec![
+                named(1, "Crocodile", "Underworld"),
+                named(2, "Born Slippy", "Underworld"),
+                named(3, "Kids", "MGMT"),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(store.search_tracks("underworld", 10).await.unwrap().len(), 2);
+        assert_eq!(store.search_tracks("kid", 10).await.unwrap()[0].track_index, 3);
+        assert_eq!(store.search_tracks("underworld", 1).await.unwrap().len(), 1);
+        assert!(store.search_tracks("zzz", 10).await.unwrap().is_empty());
     }
 }

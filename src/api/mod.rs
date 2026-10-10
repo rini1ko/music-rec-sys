@@ -23,6 +23,8 @@ pub fn router(state: AppState) -> Router {
         .route("/users/{user_index}", get(handlers::user))
         .route("/model", get(handlers::model_status))
         .route("/model/retrain", post(handlers::retrain))
+        .route("/users", get(handlers::list_users))
+        .route("/tracks", get(handlers::search_tracks))
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", docs::ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -50,8 +52,9 @@ mod tests {
 
     use super::*;
     use crate::db::store::Store;
-    use crate::domain::test_utils::{event_of, session_of, track, user};
+    use crate::domain::test_utils::{event_of, track, user};
     use crate::engine::EngineConfig;
+    use crate::domain::Track;
 
     async fn state() -> AppState {
         let store = Store::open("sqlite::memory:").await.unwrap();
@@ -240,6 +243,8 @@ mod tests {
             "/users/{user_index}",
             "/model",
             "/model/retrain",
+            "/users",
+            "/tracks",
         ] {
             assert!(body["paths"][path].is_object(), "{path} is not documented");
         }
@@ -264,5 +269,55 @@ mod tests {
             response.headers()["access-control-allow-origin"],
             "http://localhost:5173"
         );
+    }
+
+    #[tokio::test]
+    async fn users_are_listed_most_active_first() {
+        let (status, body) = get_json("/users?limit=1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(body["items"][0]["user_index"], 2);
+        assert_eq!(body["items"][0]["plays"], 3);
+    }
+
+    #[tokio::test]
+    async fn users_limit_must_be_in_range() {
+        let (status, _) = get_json("/users?limit=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn tracks_are_searched_by_name() {
+        let state = state().await;
+        let named = |index: u32, title: &str, artist: &str| Track {
+            track_index: index,
+            artist_index: index,
+            track_name: Some(title.to_string()),
+            artist_name: Some(artist.to_string()),
+        };
+        state
+            .store
+            .add_tracks(vec![
+                named(20, "Crocodile", "Underworld"),
+                named(21, "Kids", "MGMT"),
+            ])
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let (status, body) = send(&app, "GET", "/tracks?q=underworld", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["title"], "Crocodile");
+    }
+
+    #[tokio::test]
+    async fn search_text_must_be_long_enough() {
+        let (status, _) = get_json("/tracks?q=a").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = get_json("/tracks").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

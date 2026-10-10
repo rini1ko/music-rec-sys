@@ -5,7 +5,8 @@ use chrono::{Duration, Utc};
 
 use crate::api::dto::{
     ErrorBody, EventDto, HealthDto, NewEvent, RecommendQuery, RecommendationDto,
-    RecommendationsResponse, TrackDto, UserDto,
+    RecommendationsResponse, TrackDto, TrackSearchQuery, UserDto, UserSummaryDto, UsersQuery,
+    UsersResponse,
 };
 use crate::api::error::ApiError;
 use crate::api::state::{AppState, ModelStatus};
@@ -14,6 +15,19 @@ use crate::models::candidate::RecommendationContext;
 
 const MAX_TOP: usize = 100;
 const RECENT_TRACKS: usize = 10;
+const MAX_USERS_PAGE: usize = 200;
+const MAX_SEARCH_RESULTS: usize = 50;
+const MIN_SEARCH_LEN: usize = 2;
+
+fn check_range(name: &str, value: usize, max: usize) -> Result<(), ApiError> {
+    if (1..=max).contains(&value) {
+        Ok(())
+    } else {
+        Err(ApiError::BadRequest(format!(
+            "{name} must be between 1 and {max}"
+        )))
+    }
+}
 
 /// Checks that the service is up and the database answers.
 #[utoipa::path(
@@ -52,11 +66,7 @@ pub async fn recommendations(
     State(state): State<AppState>,
     Query(query): Query<RecommendQuery>,
 ) -> Result<Json<RecommendationsResponse>, ApiError> {
-    if !(1..=MAX_TOP).contains(&query.top) {
-        return Err(ApiError::BadRequest(format!(
-            "top must be between 1 and {MAX_TOP}"
-        )));
-    }
+    check_range("top", query.top, MAX_TOP)?;
 
     let history = state.store.history(query.user).await?;
     let history_len = history.len();
@@ -189,4 +199,55 @@ pub async fn retrain(
         return Err(ApiError::Conflict("training is already running".to_string()));
     }
     Ok((StatusCode::ACCEPTED, Json(state.status())))
+}
+
+/// Lists users, the most active first. Used to pick who to recommend for.
+#[utoipa::path(
+    get,
+    path = "/users",
+    tag = "users",
+    params(UsersQuery),
+    responses(
+        (status = 200, description = "One page of users", body = UsersResponse),
+        (status = 400, description = "`limit` is out of range", body = ErrorBody),
+    )
+)]
+pub async fn list_users(
+    State(state): State<AppState>,
+    Query(query): Query<UsersQuery>,
+) -> Result<Json<UsersResponse>, ApiError> {
+    check_range("limit", query.limit, MAX_USERS_PAGE)?;
+
+    let page = state.store.users_page(query.limit, query.offset).await?;
+    Ok(Json(UsersResponse {
+        total: page.total,
+        items: page.items.into_iter().map(UserSummaryDto::from).collect(),
+    }))
+}
+
+/// Finds tracks by a part of the title or of the artist name.
+#[utoipa::path(
+    get,
+    path = "/tracks",
+    tag = "tracks",
+    params(TrackSearchQuery),
+    responses(
+        (status = 200, description = "Matching tracks ordered by artist and title", body = Vec<TrackDto>),
+        (status = 400, description = "`q` is too short or `limit` is out of range", body = ErrorBody),
+    )
+)]
+pub async fn search_tracks(
+    State(state): State<AppState>,
+    Query(query): Query<TrackSearchQuery>,
+) -> Result<Json<Vec<TrackDto>>, ApiError> {
+    let text = query.q.trim();
+    if text.chars().count() < MIN_SEARCH_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "q must have at least {MIN_SEARCH_LEN} characters"
+        )));
+    }
+    check_range("limit", query.limit, MAX_SEARCH_RESULTS)?;
+
+    let tracks = state.store.search_tracks(text, query.limit).await?;
+    Ok(Json(tracks.into_iter().map(TrackDto::from).collect()))
 }

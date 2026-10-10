@@ -2,7 +2,7 @@ use utoipa::OpenApi;
 
 use crate::api::dto::{
     ErrorBody, EventDto, HealthDto, NewEvent, ReasonDto, RecommendationDto,
-    RecommendationsResponse, TrackDto, UserDto,
+    RecommendationsResponse, TrackDto, UserDto, UserSummaryDto, UsersResponse
 };
 use crate::api::handlers;
 use crate::api::state::ModelStatus;
@@ -20,6 +20,8 @@ use crate::api::state::ModelStatus;
         handlers::user,
         handlers::model_status,
         handlers::retrain,
+        handlers::list_users,
+        handlers::search_tracks,
     ),
     components(schemas(
         HealthDto,
@@ -32,6 +34,8 @@ use crate::api::state::ModelStatus;
         UserDto,
         TrackDto,
         ModelStatus,
+        UsersResponse,
+        UserSummaryDto,
     ))
 )]
 pub struct ApiDoc;
