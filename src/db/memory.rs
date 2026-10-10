@@ -231,4 +231,18 @@ mod tests {
         let repo = MemoryRepository::default();
         assert_eq!(repo.get_track(5), Ok(None));
     }
+    
+    #[test]
+    fn trending_counts_back_from_the_latest_event() {
+        let mut repo = repo_with(&[1], &[1, 2, 3]);
+        repo.add_events(vec![
+            event_of(1, 1, 0),
+            event_of(1, 3, 10),
+            event_of(1, 2, 2 * 24 * 60 - 10),
+            event_of(1, 2, 2 * 24 * 60),
+        ])
+        .unwrap();
+
+        assert_eq!(repo.trending(Duration::days(1), 5), Ok(vec![(2, 2)]));
+    }
 }
