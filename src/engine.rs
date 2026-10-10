@@ -76,6 +76,22 @@ impl EngineConfig {
         self.weights = weights;
         self
     }
+
+    /// Small datasets do not have enough overlap for the default thresholds.
+    pub fn lenient() -> Self {
+        EngineConfig {
+            co_listening: CoListeningConfig {
+                min_cooccurrence: 1,
+                min_jaccard: 0.0,
+                ..CoListeningConfig::default()
+            },
+            cf: CfConfig {
+                min_overlap: 1,
+                ..CfConfig::default()
+            },
+            ..EngineConfig::default()
+        }
+    }
 }
 
 /// Trains every model on the data in the repository and wires them into a ranker.
@@ -106,7 +122,7 @@ pub fn build_ranker_from_data(
     assemble(trends, events, sessions, config)
 }
 
-fn assemble(
+pub fn assemble(
     trends: TrendsGenerator,
     events: &[ListenEvent],
     sessions: &[Session],

@@ -33,7 +33,11 @@ impl Store {
     pub async fn add_events(&self, events: Vec<ListenEvent>) -> Result<(), DbError> {
         queries::insert_events(&self.db, events).await
     }
-
+    
+    pub async fn add_sessions(&self, sessions: Vec<Session>) -> Result<(), DbError> {
+        queries::insert_sessions(&self.db, sessions).await
+    }
+    
     pub async fn all_events(&self) -> Result<Vec<ListenEvent>, DbError> {
         queries::all_events(&self.db).await
     }

@@ -14,8 +14,6 @@ use music_recommendation_system::evaluation::split::SplitMode;
 use music_recommendation_system::evaluation::tuning::tune;
 use music_recommendation_system::evaluation::{EvalConfig, Evaluator};
 use music_recommendation_system::models::candidate::RecommendationContext;
-use music_recommendation_system::models::cf::CfConfig;
-use music_recommendation_system::models::co_listening::CoListeningConfig;
 use music_recommendation_system::etl::loader::{LoadReport, load_from_path, load_from_reader};
 use music_recommendation_system::api::{self, state::AppState};
 
@@ -126,7 +124,20 @@ async fn run_server(args: &ServeArgs) -> Result<()> {
     let store = Store::open(&sqlite_url(&args.db))
         .await
         .with_context(|| format!("failed to open {}", args.db))?;
-    let app = api::router(AppState { store });
+
+    let config = if args.lenient {
+        EngineConfig::lenient()
+    } else {
+        EngineConfig::default()
+    };
+    tracing::info!("training the models");
+    let started = Instant::now();
+    let ranker = api::state::train(&store, config)
+        .await
+        .context("failed to train the models")?;
+    tracing::info!(seconds = started.elapsed().as_secs_f32(), "models are ready");
+
+    let app = api::router(AppState::new(store, ranker));
 
     let listener = tokio::net::TcpListener::bind(&args.addr)
         .await
@@ -167,22 +178,6 @@ fn stats(args: &DataArgs) -> Result<()> {
     Ok(())
 }
 
-/// Small files do not have enough overlap for the default thresholds.
-fn lenient_config() -> EngineConfig {
-    EngineConfig {
-        co_listening: CoListeningConfig {
-            min_cooccurrence: 1,
-            min_jaccard: 0.0,
-            ..CoListeningConfig::default()
-        },
-        cf: CfConfig {
-            min_overlap: 1,
-            ..CfConfig::default()
-        },
-        ..EngineConfig::default()
-    }
-}
-
 fn recommend(args: &RecommendArgs) -> Result<()> {
     let repo = open(&args.data)?;
 
@@ -192,7 +187,7 @@ fn recommend(args: &RecommendArgs) -> Result<()> {
     };
 
     let config = if args.lenient {
-        lenient_config()
+        EngineConfig::lenient()
     } else {
         EngineConfig::default()
     };
@@ -446,13 +441,14 @@ mod tests {
         let error = stats(&args).unwrap_err();
         assert!(error.to_string().contains("run `etl` first"));
     }
-    
+
     #[test]
     fn serve_needs_an_existing_database() {
         let error = serve(&ServeArgs {
             db: "target/no-such.db".to_string(),
             addr: "127.0.0.1:0".to_string(),
             log_dir: "target/logs".to_string(),
+            lenient: false,
         })
         .unwrap_err();
         assert!(error.to_string().contains("run `etl` first"));

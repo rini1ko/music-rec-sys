@@ -17,6 +17,16 @@ impl Source {
             Source::Cf => "people with similar taste listened to this",
         }
     }
+
+    /// Stable machine name of the model, used in the API.
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::Trends => "trends",
+            Source::Markov => "markov",
+            Source::CoListening => "co_listening",
+            Source::Cf => "cf",
+        }
+    }
 }
 
 /// A track proposed by one model. Scores of different models are not comparable
@@ -32,7 +42,7 @@ pub struct RecommendationContext {
     pub history: Vec<u32>,
 }
 
-pub trait CandidateGenerator {
+pub trait CandidateGenerator: Send + Sync {
     fn source(&self) -> Source;
     fn candidates(&self, context: &RecommendationContext, limit: usize) -> Vec<Candidate>;
 }

@@ -113,6 +113,10 @@ pub struct ServeArgs {
     /// Directory for the JSON log files
     #[arg(long, default_value = "logs")]
     pub log_dir: String,
+
+    /// Relaxed thresholds for tiny datasets such as sample.csv
+    #[arg(long)]
+    pub lenient: bool,
 }
 
 fn at_least_one(value: &str) -> Result<usize, String> {
