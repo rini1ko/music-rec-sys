@@ -20,9 +20,14 @@ export function messageOf(error: unknown): string {
 
 /**
  * Loads data again whenever `key` changes, `refresh` changes or `reload` is called.
- * When only `refresh` or `reload` triggers it, the old data stays visible meanwhile.
+ * When only `refresh` or `reload` triggers it, the old data stays visible meanwhile,
+ * so use `refresh` for changes that should not blank the screen (e.g. slider values).
  */
-export function useAsync<T>(load: () => Promise<T>, key: string, refresh = 0): AsyncState<T> {
+export function useAsync<T>(
+  load: () => Promise<T>,
+  key: string,
+  refresh: number | string = 0,
+): AsyncState<T> {
   const [version, setVersion] = useState(0);
   const [settled, setSettled] = useState<Settled<T> | null>(null);
   const stamp = `${refresh}:${version}`;

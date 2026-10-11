@@ -1,7 +1,12 @@
+import { Button } from "./ui/Button";
+
 export function Spinner({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-3 py-6 text-sm text-slate-400" role="status">
-      <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-600 border-t-emerald-400" />
+    <div className="flex items-center gap-3 py-6 text-sm text-fg-muted" role="status">
+      <span
+        aria-hidden="true"
+        className="h-4 w-4 animate-spin rounded-full border-2 border-line-strong border-t-accent"
+      />
       {label}
     </div>
   );
@@ -10,18 +15,14 @@ export function Spinner({ label }: { label: string }) {
 export function ErrorBox({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <div
-      className="rounded-lg border border-rose-900 bg-rose-950/40 p-4 text-sm text-rose-200"
+      className="rounded-lg border border-danger-line bg-danger-surface/40 p-4 text-sm text-danger-text"
       role="alert"
     >
       <p>{message}</p>
       {onRetry && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-3 rounded-md border border-rose-700 px-3 py-1 text-rose-100 hover:bg-rose-900/50"
-        >
+        <Button variant="danger" size="sm" onClick={onRetry} className="mt-3">
           Try again
-        </button>
+        </Button>
       )}
     </div>
   );

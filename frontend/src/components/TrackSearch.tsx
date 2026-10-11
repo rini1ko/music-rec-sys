@@ -3,7 +3,10 @@ import { api } from "../api/client";
 import type { Track } from "../api/types";
 import { useAsync } from "../hooks/useAsync";
 import { useDebounced } from "../hooks/useDebounced";
-import { ErrorBox, Spinner } from "./Feedback";
+import { ErrorBox } from "./Feedback";
+import { Button } from "./ui/Button";
+import { SkeletonList } from "./ui/Skeleton";
+import { inputClasses, labelClasses } from "./ui/styles";
 
 const MIN_LENGTH = 2;
 
@@ -24,7 +27,7 @@ export function TrackSearch({ busyTrack, onListen }: Props) {
 
   return (
     <div>
-      <label htmlFor="track-search" className="text-xs font-medium uppercase tracking-wider text-slate-400">
+      <label htmlFor="track-search" className={labelClasses}>
         Find a track to play
       </label>
       <input
@@ -33,32 +36,36 @@ export function TrackSearch({ busyTrack, onListen }: Props) {
         value={text}
         onChange={(event) => setText(event.target.value)}
         placeholder="Title or artist"
-        className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm placeholder:text-slate-600 focus:border-emerald-500 focus:outline-none"
+        className={`${inputClasses} mt-2`}
       />
 
       <div className="mt-3">
-        {!active && <p className="text-sm text-slate-500">Type at least {MIN_LENGTH} characters.</p>}
+        {!active && <p className="text-sm text-fg-subtle">Type at least {MIN_LENGTH} characters.</p>}
         {active && results.error && <ErrorBox message={results.error} onRetry={results.reload} />}
-        {active && !results.error && !results.data && <Spinner label="Searching..." />}
+        {active && !results.error && !results.data && (
+          <SkeletonList rows={3} label="Searching..." rowClassName="h-12" />
+        )}
         {active && results.data && results.data.length === 0 && (
-          <p className="text-sm text-slate-500">No tracks match "{query}".</p>
+          <p className="text-sm text-fg-subtle">No tracks match "{query}".</p>
         )}
         {active && results.data && results.data.length > 0 && (
-          <ul className="divide-y divide-slate-800 rounded-lg border border-slate-800">
+          <ul className="divide-y divide-line rounded-lg border border-line">
             {results.data.map((track) => (
               <li key={track.track_index} className="flex items-center justify-between gap-3 px-3 py-2">
                 <div className="min-w-0">
                   <p className="truncate text-sm">{track.title ?? "Unknown track"}</p>
-                  <p className="truncate text-xs text-slate-500">{track.artist ?? "Unknown artist"}</p>
+                  <p className="truncate text-xs text-fg-subtle">{track.artist ?? "Unknown artist"}</p>
                 </div>
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
+                  size="sm"
                   disabled={busyTrack !== null}
+                  busy={busyTrack === track.track_index}
                   onClick={() => onListen(track)}
-                  className="shrink-0 rounded-md bg-emerald-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
+                  aria-label={`Listen to ${track.title ?? "this track"}`}
                 >
                   {busyTrack === track.track_index ? "Saving..." : "Listen"}
-                </button>
+                </Button>
               </li>
             ))}
           </ul>

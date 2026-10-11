@@ -1,5 +1,10 @@
 export type Source = "trends" | "markov" | "co_listening" | "cf" | "artist" | "country" | "popular";
 
+/** Models whose weight can be changed, a subset of `Source`. */
+export type WeightKey = "trends" | "markov" | "co_listening" | "cf";
+
+export type Weights = Record<WeightKey, number>;
+
 export interface Reason {
   source: Source;
   text: string;
@@ -75,4 +80,13 @@ export interface ModelStatus {
   events: number;
   sessions: number;
   last_error: string | null;
+  /** Used when a request does not override them. */
+  weights: Weights;
+}
+
+export interface NewUser {
+  country?: string;
+  /** From 1 to 120. */
+  age?: number;
+  gender?: string;
 }

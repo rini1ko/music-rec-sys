@@ -5,9 +5,10 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::api::dto::WeightsDto;
 use crate::db::error::DbError;
 use crate::db::store::Store;
-use crate::engine::{EngineConfig, assemble};
+use crate::engine::{EngineConfig, Weights, assemble};
 use crate::etl::sessionizer::sessionize_all;
 use crate::models::adapters::TrendsGenerator;
 use crate::models::catalog::Catalog;
@@ -31,10 +32,12 @@ pub struct ModelStatus {
     pub events: usize,
     pub sessions: usize,
     pub last_error: Option<String>,
+    /// Weights used when a request does not override them.
+    pub weights: WeightsDto,
 }
 
 impl ModelStatus {
-    fn new(trained: &Trained) -> Self {
+    fn new(trained: &Trained, weights: Weights) -> Self {
         Self {
             training: false,
             trained_at: Utc::now(),
@@ -42,6 +45,7 @@ impl ModelStatus {
             events: trained.events,
             sessions: trained.sessions,
             last_error: None,
+            weights: weights.into(),
         }
     }
 }
@@ -57,7 +61,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(store: Store, trained: Trained, config: EngineConfig) -> Self {
-        let status = ModelStatus::new(&trained);
+        let status = ModelStatus::new(&trained, config.weights);
         Self {
             store,
             recommender: Arc::new(RwLock::new(trained.recommender)),
@@ -93,7 +97,7 @@ impl AppState {
     async fn run_training(&self) {
         match train(&self.store, self.config.clone()).await {
             Ok(trained) => {
-                let status = ModelStatus::new(&trained);
+                let status = ModelStatus::new(&trained, self.config.weights);
                 tracing::info!(
                     seconds = trained.seconds,
                     events = trained.events,

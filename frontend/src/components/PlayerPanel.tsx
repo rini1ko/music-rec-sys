@@ -2,17 +2,17 @@ import { useState } from "react";
 import { api } from "../api/client";
 import type { Track, UserProfile } from "../api/types";
 import { messageOf, useAsync } from "../hooks/useAsync";
-import { ErrorBox, Spinner } from "./Feedback";
+import { useToast } from "../hooks/useToast";
+import { ErrorBox } from "./Feedback";
+import { OnboardingProgress } from "./OnboardingProgress";
 import { TrackSearch } from "./TrackSearch";
+import { Card } from "./ui/Card";
+import { Skeleton } from "./ui/Skeleton";
+import { labelClasses } from "./ui/styles";
 
 interface Props {
-  userId: number | null;
+  userId: number;
   onListened: () => void;
-}
-
-interface Message {
-  kind: "ok" | "error";
-  text: string;
 }
 
 function describe(profile: UserProfile): string {
@@ -22,80 +22,66 @@ function describe(profile: UserProfile): string {
 }
 
 export function PlayerPanel({ userId, onListened }: Props) {
+  const toast = useToast();
   const [refresh, setRefresh] = useState(0);
   const [busyTrack, setBusyTrack] = useState<number | null>(null);
-  const [message, setMessage] = useState<Message | null>(null);
 
-  const profile = useAsync<UserProfile | null>(
-    () => (userId === null ? Promise.resolve(null) : api.user(userId)),
-    `profile-${userId}`,
-    refresh,
-  );
+  const profile = useAsync(() => api.user(userId), `profile-${userId}`, refresh);
 
   async function listen(track: Track) {
-    if (userId === null) return;
     setBusyTrack(track.track_index);
-    setMessage(null);
     try {
       await api.addEvent({ user: userId, track: track.track_index });
-      setMessage({ kind: "ok", text: `Saved: ${track.title ?? "track"} by ${track.artist ?? "unknown"}` });
+      toast.show("success", `Played ${track.title ?? "a track"} by ${track.artist ?? "unknown artist"}`);
       setRefresh((value) => value + 1);
       onListened();
     } catch (error) {
-      setMessage({ kind: "error", text: messageOf(error) });
+      toast.show("error", messageOf(error));
     } finally {
       setBusyTrack(null);
     }
   }
 
-  if (userId === null) {
-    return <p className="text-slate-400">Pick a listener, then play a track for them.</p>;
-  }
   if (profile.error) {
     return <ErrorBox message={profile.error} onRetry={profile.reload} />;
   }
   if (!profile.data) {
-    return <Spinner label="Loading the listener..." />;
+    return (
+      <div role="status" aria-label="Loading the listener..." className="space-y-3">
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="h-4 w-64" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
   }
 
   const user = profile.data;
   return (
-    <section aria-label="Player" className="space-y-6 rounded-xl border border-slate-800 p-5">
-      <div>
-        <h2 className="text-lg font-semibold">User {user.user_index}</h2>
-        <p className="text-sm text-slate-400">
-          {describe(user) || "No profile details"} · {user.history_len.toLocaleString()} plays
-        </p>
+    <Card
+      title={`User ${user.user_index}`}
+      description={`${describe(user) || "No profile details"} · ${user.history_len.toLocaleString()} plays`}
+    >
+      <div className="space-y-6">
+        <OnboardingProgress plays={user.history_len} />
+
+        <div>
+          <h3 className={`${labelClasses} mb-2`}>Recently played</h3>
+          {user.recent.length === 0 ? (
+            <p className="text-sm text-fg-subtle">Nothing yet.</p>
+          ) : (
+            <ol className="space-y-1 text-sm">
+              {user.recent.slice(0, 5).map((track, index) => (
+                <li key={`${track.track_index}-${index}`} className="truncate">
+                  {track.title ?? "Unknown track"}
+                  <span className="text-fg-subtle"> · {track.artist ?? "Unknown artist"}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+
+        <TrackSearch busyTrack={busyTrack} onListen={listen} />
       </div>
-
-      <div>
-        <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-400">
-          Recently played
-        </h3>
-        {user.recent.length === 0 ? (
-          <p className="text-sm text-slate-500">Nothing yet.</p>
-        ) : (
-          <ol className="space-y-1 text-sm">
-            {user.recent.slice(0, 5).map((track, index) => (
-              <li key={`${track.track_index}-${index}`} className="truncate text-slate-300">
-                {track.title ?? "Unknown track"}
-                <span className="text-slate-500"> · {track.artist ?? "Unknown artist"}</span>
-              </li>
-            ))}
-          </ol>
-        )}
-      </div>
-
-      <TrackSearch busyTrack={busyTrack} onListen={listen} />
-
-      {message && (
-        <p
-          role="status"
-          className={`text-sm ${message.kind === "ok" ? "text-emerald-300" : "text-rose-300"}`}
-        >
-          {message.text}
-        </p>
-      )}
-    </section>
+    </Card>
   );
 }

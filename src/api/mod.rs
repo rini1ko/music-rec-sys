@@ -218,6 +218,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_status_reports_the_default_weights() {
+        let (_, body) = get_json("/model").await;
+        let weights = EngineConfig::lenient().weights;
+        let reported = |name: &str| body["weights"][name].as_f64().unwrap();
+        assert!((reported("trends") - weights.trends).abs() < 1e-9);
+        assert!((reported("markov") - weights.markov).abs() < 1e-9);
+        assert!((reported("co_listening") - weights.co_listening).abs() < 1e-9);
+        assert!((reported("cf") - weights.cf).abs() < 1e-9);
+    }
+
+    #[tokio::test]
     async fn only_one_training_runs_at_a_time() {
         let state = state().await;
         assert!(state.retrain());

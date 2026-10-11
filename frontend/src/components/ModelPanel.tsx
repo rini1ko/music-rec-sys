@@ -1,21 +1,31 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router";
 import { api } from "../api/client";
 import { messageOf, useAsync } from "../hooks/useAsync";
+import { useToast } from "../hooks/useToast";
+import { SOURCE_LABELS, WEIGHT_KEYS } from "../lib/labels";
+import { paths } from "../lib/paths";
+import { weightShares } from "../lib/weights";
 import { ErrorBox, Spinner } from "./Feedback";
+import { Button } from "./ui/Button";
+import { Card } from "./ui/Card";
+import { SkeletonList } from "./ui/Skeleton";
 
 const POLL_MS = 1500;
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-      <dt className="text-xs uppercase tracking-wider text-slate-400">{label}</dt>
+    <div className="rounded-xl border border-line bg-surface/60 p-4">
+      <dt className="text-xs uppercase tracking-wider text-fg-muted">{label}</dt>
       <dd className="mt-1 text-lg tabular-nums">{value}</dd>
     </div>
   );
 }
 
 export function ModelPanel() {
+  const toast = useToast();
   const model = useAsync(() => api.model(), "model");
+  const [starting, setStarting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const { reload } = model;
   const training = model.data?.training ?? false;
@@ -29,11 +39,15 @@ export function ModelPanel() {
 
   async function startTraining() {
     setActionError(null);
+    setStarting(true);
     try {
       await api.retrain();
+      toast.show("info", "Training started. The old models answer requests until it ends.");
       reload();
     } catch (error) {
       setActionError(messageOf(error));
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -41,44 +55,62 @@ export function ModelPanel() {
     return <ErrorBox message={model.error} onRetry={model.reload} />;
   }
   if (!model.data) {
-    return <Spinner label="Loading the model status..." />;
+    return <SkeletonList rows={3} label="Loading the model status..." />;
   }
 
   const status = model.data;
+  const shares = weightShares(status.weights);
   return (
-    <section aria-label="Models" className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold">Models</h2>
-        <p className="mt-1 max-w-2xl text-sm text-slate-400">
-          New plays change a listener's history at once. Trends, the co-listening graph and similar
-          listeners learn from them only after the models are trained again. Requests are served by
-          the old models until the new ones are ready.
-        </p>
-      </div>
+    <div className="space-y-6">
+      <Card
+        title="Models"
+        description="New plays change a listener's history at once. Trends, the co-listening graph and similar listeners learn from them only after the models are trained again. Requests are served by the old models until the new ones are ready."
+      >
+        <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Stat label="Trained" value={new Date(status.trained_at).toLocaleString()} />
+          <Stat label="Training took" value={`${status.train_seconds.toFixed(1)} s`} />
+          <Stat label="Events" value={status.events.toLocaleString()} />
+          <Stat label="Sessions" value={status.sessions.toLocaleString()} />
+        </dl>
 
-      <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Trained" value={new Date(status.trained_at).toLocaleString()} />
-        <Stat label="Training took" value={`${status.train_seconds.toFixed(1)} s`} />
-        <Stat label="Events" value={status.events.toLocaleString()} />
-        <Stat label="Sessions" value={status.sessions.toLocaleString()} />
-      </dl>
+        <div className="mt-6 flex flex-wrap items-center gap-4">
+          <Button variant="primary" onClick={startTraining} busy={starting} disabled={status.training}>
+            {status.training ? "Training..." : "Train again"}
+          </Button>
+          {status.training && <Spinner label="Training on all stored events" />}
+        </div>
 
-      <div className="flex items-center gap-4">
-        <button
-          type="button"
-          onClick={startTraining}
-          disabled={status.training}
-          className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
-        >
-          {status.training ? "Training..." : "Train again"}
-        </button>
-        {status.training && <Spinner label="Training on all stored events" />}
-      </div>
+        {actionError && (
+          <div className="mt-4">
+            <ErrorBox message={actionError} />
+          </div>
+        )}
+        {status.last_error && (
+          <div className="mt-4">
+            <ErrorBox message={`The last training failed: ${status.last_error}`} />
+          </div>
+        )}
+      </Card>
 
-      {actionError && <ErrorBox message={actionError} />}
-      {status.last_error && (
-        <ErrorBox message={`The last training failed: ${status.last_error}`} />
-      )}
-    </section>
+      <Card
+        title="Default weights"
+        description="Every request uses these weights unless it sets its own."
+        actions={
+          <Link to={paths.listener("sandbox", null)} className="text-sm text-accent-text hover:underline">
+            Try other weights
+          </Link>
+        }
+      >
+        <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {WEIGHT_KEYS.map((key) => (
+            <Stat
+              key={key}
+              label={SOURCE_LABELS[key]}
+              value={`${status.weights[key]} (${Math.round(shares[key] * 100)}%)`}
+            />
+          ))}
+        </dl>
+      </Card>
+    </div>
   );
 }

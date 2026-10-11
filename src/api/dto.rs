@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::domain::{Track, UserSummary};
+use crate::engine::Weights;
 use crate::ranker::Recommendation;
 
 fn default_top() -> usize {
@@ -31,6 +32,27 @@ pub struct ErrorBody {
     pub error: String,
 }
 
+/// Default weight of each model. A request to `/recommendations` can override
+/// any of them for itself.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
+pub struct WeightsDto {
+    pub trends: f64,
+    pub markov: f64,
+    pub co_listening: f64,
+    pub cf: f64,
+}
+
+impl From<Weights> for WeightsDto {
+    fn from(weights: Weights) -> Self {
+        Self {
+            trends: weights.trends,
+            markov: weights.markov,
+            co_listening: weights.co_listening,
+            cf: weights.cf,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct RecommendQuery {
@@ -51,7 +73,8 @@ pub struct RecommendQuery {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ReasonDto {
-    /// Machine name of the model: trends, markov, co_listening or cf.
+    /// Machine name of the source: trends, markov, co_listening, cf, artist,
+    /// country or popular.
     pub source: &'static str,
     /// Human-readable explanation.
     pub text: &'static str,

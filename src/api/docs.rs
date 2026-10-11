@@ -2,7 +2,7 @@ use utoipa::OpenApi;
 
 use crate::api::dto::{
     ErrorBody, EventDto, HealthDto, NewEvent, NewUser, ReasonDto, RecommendationDto,
-    RecommendationsResponse, TrackDto, UserDto, UserSummaryDto, UsersResponse,
+    RecommendationsResponse, TrackDto, UserDto, UserSummaryDto, UsersResponse, WeightsDto,
 };
 use crate::api::handlers;
 use crate::api::state::ModelStatus;
@@ -36,6 +36,7 @@ use crate::api::state::ModelStatus;
         UserDto,
         TrackDto,
         ModelStatus,
+        WeightsDto,
         UsersResponse,
         UserSummaryDto,
         NewUser,
