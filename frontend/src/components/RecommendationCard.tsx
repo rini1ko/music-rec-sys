@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
+import { Link } from "react-router";
 import type { Recommendation } from "../api/types";
+import { artistName, trackTitle } from "../lib/format";
+import { paths } from "../lib/paths";
 import { ReasonBadge } from "./ReasonBadge";
+import { linkClasses } from "./ui/styles";
 
 interface Props {
   rank: number;
@@ -10,9 +14,21 @@ interface Props {
   marker?: ReactNode;
   /** A smaller card without the score bar, for side-by-side lists. */
   compact?: boolean;
+  /** Where the title leads. By default, to the tracks similar to this one. */
+  trackHref?: string;
+  /** Buttons on the right, e.g. Listen. */
+  actions?: ReactNode;
 }
 
-export function RecommendationCard({ rank, item, maxScore, marker, compact = false }: Props) {
+export function RecommendationCard({
+  rank,
+  item,
+  maxScore,
+  marker,
+  compact = false,
+  trackHref,
+  actions,
+}: Props) {
   const width = maxScore > 0 ? Math.round((item.score / maxScore) * 100) : 0;
 
   return (
@@ -23,8 +39,24 @@ export function RecommendationCard({ rank, item, maxScore, marker, compact = fal
       </div>
 
       <div className="min-w-0 flex-1">
-        <p className="truncate font-medium">{item.title ?? "Unknown track"}</p>
-        <p className="truncate text-sm text-fg-muted">{item.artist ?? "Unknown artist"}</p>
+        <p className="truncate font-medium">
+          <Link
+            to={trackHref ?? paths.track(item.track_index)}
+            title="Tracks that fit after this one"
+            className={linkClasses}
+          >
+            {trackTitle(item.title)}
+          </Link>
+        </p>
+        <p className="truncate text-sm text-fg-muted">
+          {item.artist_index === null ? (
+            artistName(item.artist)
+          ) : (
+            <Link to={paths.artist(item.artist_index)} className={linkClasses}>
+              {artistName(item.artist)}
+            </Link>
+          )}
+        </p>
         <div className="mt-3 flex flex-wrap gap-2">
           {item.reasons.map((reason) => (
             <ReasonBadge key={reason.source} reason={reason} />
@@ -40,6 +72,7 @@ export function RecommendationCard({ rank, item, maxScore, marker, compact = fal
           </div>
         </div>
       )}
+      {actions !== undefined && <div className="flex shrink-0 items-center">{actions}</div>}
     </li>
   );
 }

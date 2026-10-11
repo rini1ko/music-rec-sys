@@ -1,9 +1,15 @@
 import type {
+  Artist,
+  ArtistProfile,
   EventCreated,
   Health,
+  HistoryResponse,
   ModelStatus,
   NewEvent,
   NewUser,
+  Overview,
+  RadioResponse,
+  Recommendation,
   RecommendationsResponse,
   Track,
   UserProfile,
@@ -66,6 +72,19 @@ export const api = {
   searchTracks: (text: string, limit = 20) =>
     request<Track[]>(`/tracks?q=${encodeURIComponent(text)}&limit=${limit}`),
   addEvent: (event: NewEvent) => postJson<EventCreated>("/events", event),
+  track: (trackIndex: number) => request<Track>(`/tracks/${trackIndex}`),
+  similar: (trackIndex: number, top = 10) =>
+    request<Recommendation[]>(`/tracks/${trackIndex}/similar?top=${top}`),
+  overview: (days: number, top = 10) =>
+    request<Overview>(`/stats/overview?days=${days}&top=${top}`),
+  searchArtists: (text: string, limit = 20) =>
+    request<Artist[]>(`/artists?q=${encodeURIComponent(text)}&limit=${limit}`),
+  artist: (artistIndex: number, top = 20) =>
+    request<ArtistProfile>(`/artists/${artistIndex}?top=${top}`),
+  history: (user: number, limit: number, offset: number) =>
+    request<HistoryResponse>(`/users/${user}/history?limit=${limit}&offset=${offset}`),
+  radio: (user: number, length: number) =>
+    request<RadioResponse>(`/users/${user}/radio?length=${length}`),
   model: () => request<ModelStatus>("/model"),
   retrain: () => request<ModelStatus>("/model/retrain", { method: "POST" }),
 };

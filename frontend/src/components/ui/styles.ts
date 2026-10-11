@@ -36,3 +36,11 @@ export const inputClasses = cx(
 );
 
 export const labelClasses = "text-xs font-medium uppercase tracking-wider text-fg-muted";
+
+/** A link inside text: same color as the text, underlined on hover. */
+export const linkClasses =
+  "rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-accent";
+
+/** A link that should stand out from the text around it. */
+export const accentLinkClasses =
+  "rounded-sm text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-accent";

@@ -15,6 +15,8 @@ export interface Recommendation {
   track_index: number;
   title: string | null;
   artist: string | null;
+  /** Null only when the track is missing from the catalog. */
+  artist_index: number | null;
   score: number;
   reasons: Reason[];
 }
@@ -29,6 +31,73 @@ export interface Track {
   track_index: number;
   title: string | null;
   artist: string | null;
+  artist_index: number;
+}
+
+export interface TrackPlays extends Track {
+  plays: number;
+}
+
+export interface Artist {
+  artist_index: number;
+  name: string | null;
+  /** All tracks of the artist in a search, played ones in the statistics. */
+  tracks: number;
+  plays: number;
+  listeners: number;
+}
+
+export interface ArtistProfile extends Artist {
+  top_tracks: TrackPlays[];
+}
+
+export interface DayPlays {
+  /** `YYYY-MM-DD`. */
+  day: string;
+  plays: number;
+}
+
+export interface CountryPlays {
+  country: string | null;
+  listeners: number;
+  plays: number;
+}
+
+export interface Overview {
+  days: number;
+  from: string | null;
+  to: string | null;
+  plays: number;
+  listeners: number;
+  tracks: number;
+  artists: number;
+  top_tracks: TrackPlays[];
+  top_artists: Artist[];
+  /** Days without plays are missing. */
+  by_day: DayPlays[];
+  /** 24 numbers, index is the hour. */
+  by_hour: number[];
+  /** 7 numbers, index 0 is Sunday. */
+  by_weekday: number[];
+  countries: CountryPlays[];
+}
+
+export interface HistoryEntry extends Track {
+  timestamp: string;
+}
+
+export interface HistoryResponse {
+  user: number;
+  total: number;
+  limit: number;
+  offset: number;
+  items: HistoryEntry[];
+}
+
+export interface RadioResponse {
+  user: number;
+  history_len: number;
+  items: Recommendation[];
 }
 
 export interface UserSummary {

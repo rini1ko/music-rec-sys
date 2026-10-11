@@ -3,6 +3,7 @@ import { NoListener } from "../components/NoListener";
 import { PlayerPanel } from "../components/PlayerPanel";
 import { RecommendationList } from "../components/RecommendationList";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { useListenerEvents } from "../hooks/useListenerEvents";
 import { useUserParam } from "../hooks/useUserParam";
 
 export function PlayerPage() {
@@ -18,10 +19,16 @@ export function PlayerPage() {
 
 function Player({ userId }: { userId: number }) {
   const [plays, setPlays] = useState(0);
+  const { notifyListened } = useListenerEvents();
+
+  function listened() {
+    setPlays((value) => value + 1);
+    notifyListened();
+  }
 
   return (
     <div className="space-y-8">
-      <PlayerPanel userId={userId} onListened={() => setPlays((value) => value + 1)} />
+      <PlayerPanel userId={userId} onListened={listened} />
       <RecommendationList userId={userId} refresh={plays} linkToPlayer={false} />
     </div>
   );

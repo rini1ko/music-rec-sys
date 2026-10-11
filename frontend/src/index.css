@@ -30,6 +30,10 @@
   --warning-text: #fcd34d;
   --warning-surface: #451a03;
   --warning-line: #92400e;
+
+  /* single-series chart marks; checked with the dataviz validator against --surface */
+  --chart-1: #3987e5;
+  --chart-grid: #1e293b;
 }
 
 @theme inline {
@@ -56,6 +60,9 @@
   --color-warning-text: var(--warning-text);
   --color-warning-surface: var(--warning-surface);
   --color-warning-line: var(--warning-line);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-grid: var(--chart-grid);
 }
 
 body {

@@ -3,7 +3,14 @@ import { Link, NavLink, Outlet, useLocation } from "react-router";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { StatusPill } from "../components/StatusPill";
 import { cx } from "../components/ui/styles";
-import { LISTENER_SECTIONS, matchListener, paths } from "../lib/paths";
+import { matchListener, paths, type ListenerSection } from "../lib/paths";
+
+/** Pages that do not belong to one listener. */
+const GLOBAL_SECTIONS = [
+  { to: paths.dashboard, label: "Dashboard" },
+  { to: paths.artists, label: "Artists" },
+  { to: paths.models, label: "Models" },
+] as const;
 
 function navClasses(active: boolean): string {
   return cx(
@@ -17,11 +24,15 @@ export function AppShell() {
   const { pathname } = useLocation();
   const current = matchListener(pathname);
 
-  // the last picked listener stays in the links, so going to Models and back keeps them
+  // the last listener and section stay in the link, so going to Models and back keeps them
   const [lastUser, setLastUser] = useState<number | null>(null);
+  const [lastSection, setLastSection] = useState<ListenerSection>("recommendations");
   const currentUser = current?.user ?? null;
   if (currentUser !== null && currentUser !== lastUser) {
     setLastUser(currentUser);
+  }
+  if (current !== null && current.section !== lastSection) {
+    setLastSection(current.section);
   }
   const linkUser = currentUser ?? lastUser;
 
@@ -39,22 +50,18 @@ export function AppShell() {
             Music recommender
           </Link>
           <nav aria-label="Sections" className="order-3 flex w-full gap-1 overflow-x-auto sm:order-none sm:w-auto">
-            {LISTENER_SECTIONS.map((item) => {
-              const active = current?.section === item.id;
-              return (
-                <Link
-                  key={item.id}
-                  to={paths.listener(item.id, linkUser)}
-                  aria-current={active ? "page" : undefined}
-                  className={navClasses(active)}
-                >
-                  {item.label}
-                </Link>
-              );
-            })}
-            <NavLink to={paths.models} className={({ isActive }) => navClasses(isActive)}>
-              Models
-            </NavLink>
+            <Link
+              to={paths.listener(lastSection, linkUser)}
+              aria-current={current !== null ? "page" : undefined}
+              className={navClasses(current !== null)}
+            >
+              Listeners
+            </Link>
+            {GLOBAL_SECTIONS.map((item) => (
+              <NavLink key={item.to} to={item.to} className={({ isActive }) => navClasses(isActive)}>
+                {item.label}
+              </NavLink>
+            ))}
           </nav>
           <StatusPill />
         </div>
