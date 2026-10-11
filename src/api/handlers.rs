@@ -23,7 +23,7 @@ const MIN_SEARCH_LEN: usize = 2;
 const MAX_COUNTRY_LEN: usize = 56;
 const MAX_GENDER_LEN: usize = 20;
 
-fn check_range(name: &str, value: usize, max: usize) -> Result<(), ApiError> {
+pub(crate) fn check_range(name: &str, value: usize, max: usize) -> Result<(), ApiError> {
     if (1..=max).contains(&value) {
         Ok(())
     } else {
@@ -68,17 +68,20 @@ fn clean(name: &str, text: Option<String>, max: usize) -> Result<Option<String>,
     Ok(Some(text.to_string()))
 }
 
-/// Adds the title and the artist to ranked tracks.
-async fn describe(
+/// Adds the title and the artist to ranked tracks, with one query for all of them.
+pub(crate) async fn describe(
     state: &AppState,
     ranked: Vec<Recommendation>,
 ) -> Result<Vec<RecommendationDto>, ApiError> {
-    let mut items = Vec::with_capacity(ranked.len());
-    for recommendation in ranked {
-        let track = state.store.track(recommendation.track_index).await?;
-        items.push(RecommendationDto::new(recommendation, track));
-    }
-    Ok(items)
+    let wanted: Vec<u32> = ranked.iter().map(|item| item.track_index).collect();
+    let mut tracks = state.store.tracks(&wanted).await?;
+    Ok(ranked
+        .into_iter()
+        .map(|recommendation| {
+            let track = tracks.remove(&recommendation.track_index);
+            RecommendationDto::new(recommendation, track)
+        })
+        .collect())
 }
 
 /// Checks that the service is up and the database answers.
@@ -283,12 +286,14 @@ pub async fn user(
     };
     let history = state.store.history(user_index).await?;
 
-    let mut recent = Vec::new();
-    for &track_index in history.iter().rev().take(RECENT_TRACKS) {
-        if let Some(track) = state.store.track(track_index).await? {
-            recent.push(TrackDto::from(track));
-        }
-    }
+    let newest: Vec<u32> = history.iter().rev().take(RECENT_TRACKS).copied().collect();
+    let tracks = state.store.tracks(&newest).await?;
+    // a track can repeat among the newest plays, so look each one up instead of draining
+    let recent = newest
+        .iter()
+        .filter_map(|track_index| tracks.get(track_index).cloned())
+        .map(TrackDto::from)
+        .collect();
 
     Ok(Json(UserDto {
         user_index,

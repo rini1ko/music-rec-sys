@@ -61,6 +61,13 @@ fn indexes() -> Vec<IndexCreateStatement> {
             .table(listen_event::Entity)
             .col(listen_event::Column::TrackIndex)
             .to_owned(),
+        // tracks of one artist (artist page)
+        Index::create()
+            .if_not_exists()
+            .name("idx_tracks_artist")
+            .table(track::Entity)
+            .col(track::Column::ArtistIndex)
+            .to_owned(),
         Index::create()
             .if_not_exists()
             .name("idx_sessions_user")

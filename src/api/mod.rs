@@ -2,7 +2,10 @@ pub mod docs;
 pub mod dto;
 pub mod error;
 pub mod handlers;
+pub mod insights;
 pub mod state;
+#[cfg(test)]
+mod test_support;
 
 use axum::Router;
 use axum::http::header::{CONTENT_TYPE, InvalidHeaderValue};
@@ -32,6 +35,12 @@ pub fn router(state: AppState) -> Router {
             "/tracks/{track_index}/similar",
             get(handlers::similar_tracks),
         )
+        .route("/tracks/{track_index}", get(insights::track))
+        .route("/stats/overview", get(insights::overview))
+        .route("/artists", get(insights::search_artists))
+        .route("/artists/{artist_index}", get(insights::artist))
+        .route("/users/{user_index}/history", get(insights::user_history))
+        .route("/users/{user_index}/radio", get(insights::radio))
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", docs::ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -52,64 +61,14 @@ pub fn cors(origins: &[String]) -> Result<CorsLayer, InvalidHeaderValue> {
 
 #[cfg(test)]
 mod tests {
-    use axum::body::{Body, to_bytes};
+    use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use serde_json::Value;
     use tower::ServiceExt;
 
     use super::*;
-    use crate::db::store::Store;
+    use crate::api::test_support::{app, get_json, send, state};
     use crate::domain::Track;
-    use crate::domain::test_utils::{event_of, track, user};
     use crate::engine::EngineConfig;
-
-    async fn state() -> AppState {
-        let store = Store::open("sqlite::memory:").await.unwrap();
-        store.add_users(vec![user(1), user(2)]).await.unwrap();
-        store
-            .add_tracks((10..14).map(track).collect())
-            .await
-            .unwrap();
-        store
-            .add_events(vec![
-                event_of(1, 10, 0),
-                event_of(1, 11, 1),
-                event_of(2, 10, 0),
-                event_of(2, 11, 1),
-                event_of(2, 12, 2),
-            ])
-            .await
-            .unwrap();
-
-        let trained = state::train(&store, EngineConfig::lenient()).await.unwrap();
-        AppState::new(store, trained, EngineConfig::lenient())
-    }
-
-    async fn app() -> Router {
-        router(state().await)
-    }
-
-    async fn send(
-        app: &Router,
-        method: &str,
-        uri: &str,
-        body: Option<&str>,
-    ) -> (StatusCode, Value) {
-        let request = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json")
-            .body(body.map_or_else(Body::empty, |text| Body::from(text.to_owned())))
-            .unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
-        let status = response.status();
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
-    }
-
-    async fn get_json(uri: &str) -> (StatusCode, Value) {
-        send(&app().await, "GET", uri, None).await
-    }
 
     #[tokio::test]
     async fn health_reports_counts() {
@@ -269,6 +228,12 @@ mod tests {
             "/users",
             "/tracks",
             "/tracks/{track_index}/similar",
+            "/tracks/{track_index}",
+            "/stats/overview",
+            "/artists",
+            "/artists/{artist_index}",
+            "/users/{user_index}/history",
+            "/users/{user_index}/radio",
         ] {
             assert!(body["paths"][path].is_object(), "{path} is not documented");
         }

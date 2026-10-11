@@ -1,8 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::candidate::{RecommendationContext, Source};
 use crate::models::catalog::Catalog;
 use crate::ranker::{Ranker, Reason, Recommendation};
+
+/// How many tracks the radio asks for at each step. It needs one, the rest
+/// are spares for tracks that are already in the playlist or over the artist cap.
+const RADIO_STEP_POOL: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct RecommenderConfig {
@@ -162,6 +166,83 @@ impl Recommender {
         self.take_varied(ranked, top)
     }
 
+    /// A playlist that keeps going. Every picked track is added to the history
+    /// before the next one is chosen, so each step follows the ones before it.
+    /// No track repeats, heard tracks are skipped and no artist gets more than
+    /// `max_per_artist` tracks. When the models run out of ideas, popular tracks
+    /// (local first) fill the rest. The list is shorter than `length` only when
+    /// even those run out.
+    pub fn radio(
+        &self,
+        mut history: Vec<u32>,
+        country: Option<&str>,
+        length: usize,
+    ) -> Vec<Recommendation> {
+        let mut playlist = Vec::with_capacity(length);
+        let mut used: HashSet<u32> = history.iter().copied().collect();
+        let mut per_artist: HashMap<u32, usize> = HashMap::new();
+
+        while playlist.len() < length {
+            let fits = |track_index: u32| {
+                !used.contains(&track_index)
+                    && self.catalog.artist_of(track_index).is_none_or(|artist| {
+                        per_artist.get(&artist).copied().unwrap_or(0) < self.config.max_per_artist
+                    })
+            };
+            let ranked = self.recommend(
+                history.clone(),
+                country,
+                RADIO_STEP_POOL,
+                WeightOverrides::default(),
+            );
+            let next = ranked
+                .into_iter()
+                .find(|item| fits(item.track_index))
+                .or_else(|| self.popular_pick(country, fits));
+            let Some(next) = next else {
+                break;
+            };
+
+            used.insert(next.track_index);
+            if let Some(artist) = self.catalog.artist_of(next.track_index) {
+                *per_artist.entry(artist).or_default() += 1;
+            }
+            history.push(next.track_index);
+            playlist.push(next);
+        }
+        playlist
+    }
+
+    /// The most popular track that `fits`, from the country first, then from everyone.
+    fn popular_pick(
+        &self,
+        country: Option<&str>,
+        fits: impl Fn(u32) -> bool,
+    ) -> Option<Recommendation> {
+        let local = country.map_or(&[][..], |country| self.catalog.popular_in(country));
+        let lists = [
+            (local, Source::Country),
+            (self.catalog.popular_overall(), Source::Popular),
+        ];
+        lists.into_iter().find_map(|(popular, source)| {
+            let best = popular.first().map_or(1.0, |&(_, plays)| plays as f64);
+            popular
+                .iter()
+                .find(|&&(track_index, _)| fits(track_index))
+                .map(|&(track_index, plays)| {
+                    let score = plays as f64 / best;
+                    Recommendation {
+                        track_index,
+                        score,
+                        reasons: vec![Reason {
+                            source,
+                            contribution: score,
+                        }],
+                    }
+                })
+        })
+    }
+
     /// The first `top` items, skipping tracks of an artist that already has enough.
     fn take_varied(
         &self,
@@ -191,7 +272,7 @@ impl Recommender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::test_utils::{event_of, user};
+    use crate::domain::test_utils::{event_of, user, user_from};
     use crate::domain::{ListenEvent, Track, User};
     use crate::models::candidate::{Candidate, CandidateGenerator};
     use crate::ranker::RankerConfig;
@@ -251,6 +332,32 @@ mod tests {
     fn one_artist_does_not_fill_the_list() {
         let list = with_artists().recommend(vec![6], None, 5, WeightOverrides::default());
         assert_eq!(tracks_of(&list), vec![1, 2, 3, 5]);
+    }
+
+    #[test]
+    fn radio_continues_from_each_pick_and_caps_artists() {
+        // artist 1 has four candidates, the cap of three stops the fourth
+        let list = with_artists().radio(vec![6], None, 10);
+        assert_eq!(tracks_of(&list), vec![1, 2, 3, 5]);
+    }
+
+    #[test]
+    fn radio_of_a_new_listener_falls_back_to_popular_tracks() {
+        let users = [user_from(1, "UK"), user_from(3, "DE")];
+        let events = [event_of(1, 10, 0), event_of(3, 11, 0), event_of(3, 12, 1)];
+        let recommender = recommender(Vec::new(), &[], &users, &events);
+
+        let list = recommender.radio(Vec::new(), Some("DE"), 5);
+        // local tracks first, then the rest of the overall top, never a repeat
+        assert_eq!(tracks_of(&list), vec![11, 12, 10]);
+        assert_eq!(list[2].reasons[0].source, Source::Popular);
+    }
+
+    #[test]
+    fn radio_skips_heard_tracks_and_stops_at_the_length() {
+        let list = with_artists().radio(vec![1, 6], None, 2);
+        assert_eq!(tracks_of(&list), vec![2, 3]);
+        assert!(with_artists().radio(vec![6], None, 0).is_empty());
     }
 
     #[test]

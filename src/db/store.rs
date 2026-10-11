@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{Duration, NaiveDateTime};
 use sea_orm::DatabaseConnection;
 
@@ -5,7 +7,11 @@ use crate::db::error::DbError;
 use crate::db::repository::Counts;
 use crate::db::schema::{connect, create_schema};
 use crate::db::sea_repository as queries;
-use crate::domain::{ListenEvent, Session, Track, User, UsersPage};
+use crate::db::{artists, listening, stats};
+use crate::domain::{
+    ArtistProfile, ArtistSummary, HistoryPage, ListenEvent, Session, StatsOverview, Track, User,
+    UsersPage,
+};
 
 /// The same database as `SeaOrmRepository`, but async, for the web server.
 /// Cloning is cheap: all clones share one connection pool.
@@ -58,6 +64,11 @@ impl Store {
         queries::find_track(&self.db, track_index).await
     }
 
+    /// Several tracks in one query, by index. Unknown indexes are left out.
+    pub async fn tracks(&self, wanted: &[u32]) -> Result<HashMap<u32, Track>, DbError> {
+        queries::find_tracks(&self.db, wanted).await
+    }
+
     pub async fn history(&self, user_index: u32) -> Result<Vec<u32>, DbError> {
         queries::history(&self.db, user_index).await
     }
@@ -97,6 +108,39 @@ impl Store {
         gender: Option<String>,
     ) -> Result<User, DbError> {
         queries::create_user(&self.db, country, age, gender).await
+    }
+
+    /// Statistics of the last `days` days of the data, lists cut to `top` items.
+    pub async fn overview(&self, days: u32, top: usize) -> Result<StatsOverview, DbError> {
+        stats::overview(&self.db, days, top).await
+    }
+
+    /// Artists whose name contains `text`, the most played first.
+    pub async fn search_artists(
+        &self,
+        text: &str,
+        limit: usize,
+    ) -> Result<Vec<ArtistSummary>, DbError> {
+        artists::search_artists(&self.db, text, limit).await
+    }
+
+    /// An artist with their `top` most played tracks, `None` if unknown.
+    pub async fn artist(
+        &self,
+        artist_index: u32,
+        top: usize,
+    ) -> Result<Option<ArtistProfile>, DbError> {
+        artists::artist_profile(&self.db, artist_index, top).await
+    }
+
+    /// One page of a user's plays, newest first.
+    pub async fn history_page(
+        &self,
+        user_index: u32,
+        limit: usize,
+        offset: usize,
+    ) -> Result<HistoryPage, DbError> {
+        listening::history_page(&self.db, user_index, limit, offset).await
     }
 }
 

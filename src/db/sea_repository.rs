@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{Duration, NaiveDateTime};
 use sea_orm::{
@@ -379,6 +379,25 @@ pub(crate) async fn find_track(
         .one(db)
         .await?
         .map(track_from))
+}
+
+/// The stored tracks among `wanted`, by index. Unknown indexes are left out.
+pub(crate) async fn find_tracks(
+    db: &DatabaseConnection,
+    wanted: &[u32],
+) -> Result<HashMap<u32, Track>, DbError> {
+    let mut found = HashMap::with_capacity(wanted.len());
+    for chunk in wanted.chunks(CHUNK) {
+        let rows = track::Entity::find()
+            .filter(track::Column::TrackIndex.is_in(chunk.iter().copied()))
+            .all(db)
+            .await?;
+        found.extend(
+            rows.into_iter()
+                .map(|row| (row.track_index, track_from(row))),
+        );
+    }
+    Ok(found)
 }
 
 pub(crate) async fn latest_event_time(
