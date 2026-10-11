@@ -182,6 +182,43 @@ pub(crate) async fn insert_sessions(db: &DatabaseConnection, sessions: Vec<Sessi
     Ok(())
 }
 
+pub(crate) async fn all_tracks(db: &DatabaseConnection) -> Result<Vec<Track>, DbError> {
+    let rows = track::Entity::find().all(db).await?;
+    Ok(rows.into_iter().map(track_from).collect())
+}
+
+pub(crate) async fn all_users(db: &DatabaseConnection) -> Result<Vec<User>, DbError> {
+    let rows = user::Entity::find().all(db).await?;
+    Ok(rows.into_iter().map(user_from).collect())
+}
+
+/// The new user gets the next free index.
+pub(crate) async fn create_user(
+    db: &DatabaseConnection,
+    country: Option<String>,
+    age: Option<f32>,
+    gender: Option<String>,
+) -> Result<User, DbError> {
+    let txn = db.begin().await?;
+
+    let latest = user::Entity::find()
+        .order_by_desc(user::Column::UserIndex)
+        .one(&txn)
+        .await?;
+    let created = User {
+        user_index: latest.map_or(0, |row| row.user_index + 1),
+        gender,
+        age,
+        country,
+    };
+    user::Entity::insert(user_row(created.clone()))
+        .exec(&txn)
+        .await?;
+
+    txn.commit().await?;
+    Ok(created)
+}
+
 // ---------- reads and checks ----------
 
 #[derive(FromQueryResult)]

@@ -39,6 +39,14 @@ pub struct RecommendQuery {
     /// How many tracks to return, from 1 to 100. Default is 10.
     #[serde(default = "default_top")]
     pub top: usize,
+    /// Weight of the trends model for this request only, from 0 to 10.
+    pub trends: Option<f64>,
+    /// Weight of the next-track (Markov) model for this request only.
+    pub markov: Option<f64>,
+    /// Weight of the co-listening model for this request only.
+    pub co_listening: Option<f64>,
+    /// Weight of the collaborative filtering model for this request only.
+    pub cf: Option<f64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -184,4 +192,20 @@ pub struct TrackSearchQuery {
     /// How many tracks to return, from 1 to 50. Default is 20.
     #[serde(default = "default_search_limit")]
     pub limit: usize,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct SimilarQuery {
+    /// How many tracks to return, from 1 to 100. Default is 10.
+    #[serde(default = "default_top")]
+    pub top: usize,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct NewUser {
+    pub country: Option<String>,
+    /// From 1 to 120.
+    pub age: Option<f32>,
+    pub gender: Option<String>,
 }

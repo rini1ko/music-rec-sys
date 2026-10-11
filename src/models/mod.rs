@@ -4,3 +4,4 @@ pub mod cf;
 pub mod co_listening;
 pub mod markov;
 pub mod trends;
+pub mod catalog;

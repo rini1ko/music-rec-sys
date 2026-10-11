@@ -81,6 +81,23 @@ impl Store {
     pub async fn search_tracks(&self, text: &str, limit: usize) -> Result<Vec<Track>, DbError> {
         queries::search_tracks(&self.db, text, limit).await
     }
+
+    pub async fn all_tracks(&self) -> Result<Vec<Track>, DbError> {
+        queries::all_tracks(&self.db).await
+    }
+
+    pub async fn all_users(&self) -> Result<Vec<User>, DbError> {
+        queries::all_users(&self.db).await
+    }
+
+    pub async fn create_user(
+        &self,
+        country: Option<String>,
+        age: Option<f32>,
+        gender: Option<String>,
+    ) -> Result<User, DbError> {
+        queries::create_user(&self.db, country, age, gender).await
+    }
 }
 
 #[cfg(test)]
@@ -88,7 +105,7 @@ mod tests {
     use super::*;
     use crate::domain::test_utils::{event_of, track, user};
     use crate::domain::Track;
-    
+
     #[tokio::test]
     async fn events_are_stored_and_read_back() {
         let store = Store::open("sqlite::memory:").await.unwrap();
@@ -165,5 +182,15 @@ mod tests {
         assert_eq!(store.search_tracks("kid", 10).await.unwrap()[0].track_index, 3);
         assert_eq!(store.search_tracks("underworld", 1).await.unwrap().len(), 1);
         assert!(store.search_tracks("zzz", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_users_get_the_next_index() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        let first = store.create_user(Some("UK".to_string()), None, None).await.unwrap();
+        let second = store.create_user(None, Some(30.0), None).await.unwrap();
+
+        assert_eq!((first.user_index, second.user_index), (0, 1));
+        assert_eq!(store.user(1).await.unwrap().unwrap().age, Some(30.0));
     }
 }

@@ -12,6 +12,7 @@ use crate::models::cf::{CfConfig, CfModel};
 use crate::models::co_listening::{CoListeningConfig, CoListeningGraph};
 use crate::models::markov::MarkovModel;
 use crate::ranker::{Ranker, RankerConfig};
+use crate::recommender::RecommenderConfig;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Weights {
@@ -51,6 +52,7 @@ pub struct EngineConfig {
     pub co_listening_recent_tracks: usize,
     pub candidates_per_source: usize,
     pub weights: Weights,
+    pub recommender: RecommenderConfig,
 }
 
 impl Default for EngineConfig {
@@ -69,6 +71,7 @@ impl Default for EngineConfig {
                 co_listening: 0.4,
                 cf: 0.3,
             },
+            recommender: RecommenderConfig::default(),
         }
     }
 }

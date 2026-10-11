@@ -5,6 +5,9 @@ pub enum Source {
     Markov,
     CoListening,
     Cf,
+    Artist,
+    Country,
+    Popular,
 }
 
 impl Source {
@@ -15,6 +18,9 @@ impl Source {
             Source::Markov => "often played right after your last track",
             Source::CoListening => "often listened to together with your recent tracks",
             Source::Cf => "people with similar taste listened to this",
+            Source::Artist => "you often listen to this artist",
+            Source::Country => "popular in your country",
+            Source::Popular => "popular among all listeners",
         }
     }
 
@@ -25,6 +31,9 @@ impl Source {
             Source::Markov => "markov",
             Source::CoListening => "co_listening",
             Source::Cf => "cf",
+            Source::Artist => "artist",
+            Source::Country => "country",
+            Source::Popular => "popular",
         }
     }
 }

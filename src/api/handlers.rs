@@ -4,20 +4,24 @@ use axum::http::StatusCode;
 use chrono::{Duration, Utc};
 
 use crate::api::dto::{
-    ErrorBody, EventDto, HealthDto, NewEvent, RecommendQuery, RecommendationDto,
-    RecommendationsResponse, TrackDto, TrackSearchQuery, UserDto, UserSummaryDto, UsersQuery,
-    UsersResponse,
+    ErrorBody, EventDto, HealthDto, NewEvent, NewUser, RecommendQuery, RecommendationDto,
+    RecommendationsResponse, SimilarQuery, TrackDto, TrackSearchQuery, UserDto, UserSummaryDto,
+    UsersQuery, UsersResponse,
 };
 use crate::api::error::ApiError;
 use crate::api::state::{AppState, ModelStatus};
 use crate::domain::ListenEvent;
-use crate::models::candidate::RecommendationContext;
+use crate::ranker::Recommendation;
+use crate::recommender::WeightOverrides;
 
 const MAX_TOP: usize = 100;
+const MAX_WEIGHT: f64 = 10.0;
 const RECENT_TRACKS: usize = 10;
 const MAX_USERS_PAGE: usize = 200;
 const MAX_SEARCH_RESULTS: usize = 50;
 const MIN_SEARCH_LEN: usize = 2;
+const MAX_COUNTRY_LEN: usize = 56;
+const MAX_GENDER_LEN: usize = 20;
 
 fn check_range(name: &str, value: usize, max: usize) -> Result<(), ApiError> {
     if (1..=max).contains(&value) {
@@ -27,6 +31,54 @@ fn check_range(name: &str, value: usize, max: usize) -> Result<(), ApiError> {
             "{name} must be between 1 and {max}"
         )))
     }
+}
+
+fn check_weight(name: &str, value: Option<f64>) -> Result<Option<f64>, ApiError> {
+    match value {
+        Some(weight) if !(0.0..=MAX_WEIGHT).contains(&weight) => Err(ApiError::BadRequest(
+            format!("{name} must be between 0 and {MAX_WEIGHT}"),
+        )),
+        other => Ok(other),
+    }
+}
+
+fn overrides_of(query: &RecommendQuery) -> Result<WeightOverrides, ApiError> {
+    Ok(WeightOverrides {
+        trends: check_weight("trends", query.trends)?,
+        markov: check_weight("markov", query.markov)?,
+        co_listening: check_weight("co_listening", query.co_listening)?,
+        cf: check_weight("cf", query.cf)?,
+    })
+}
+
+/// Empty text counts as missing.
+fn clean(name: &str, text: Option<String>, max: usize) -> Result<Option<String>, ApiError> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.chars().count() > max {
+        return Err(ApiError::BadRequest(format!(
+            "{name} is longer than {max} characters"
+        )));
+    }
+    Ok(Some(text.to_string()))
+}
+
+/// Adds the title and the artist to ranked tracks.
+async fn describe(
+    state: &AppState,
+    ranked: Vec<Recommendation>,
+) -> Result<Vec<RecommendationDto>, ApiError> {
+    let mut items = Vec::with_capacity(ranked.len());
+    for recommendation in ranked {
+        let track = state.store.track(recommendation.track_index).await?;
+        items.push(RecommendationDto::new(recommendation, track));
+    }
+    Ok(items)
 }
 
 /// Checks that the service is up and the database answers.
@@ -50,7 +102,9 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthDto>, Ap
     }))
 }
 
-/// Recommends tracks for a user, with the reasons behind each one.
+/// Recommends tracks for a user, with the reasons behind each one. A user without
+/// history gets what is popular in their country. The model weights can be
+/// changed for one request to see how each model influences the result.
 #[utoipa::path(
     get,
     path = "/recommendations",
@@ -58,7 +112,7 @@ pub async fn health(State(state): State<AppState>) -> Result<Json<HealthDto>, Ap
     params(RecommendQuery),
     responses(
         (status = 200, description = "Ranked tracks, best first", body = RecommendationsResponse),
-        (status = 400, description = "`top` is out of range or `user` is missing", body = ErrorBody),
+        (status = 400, description = "A parameter is out of range or missing", body = ErrorBody),
         (status = 404, description = "No such user", body = ErrorBody),
     )
 )]
@@ -67,30 +121,64 @@ pub async fn recommendations(
     Query(query): Query<RecommendQuery>,
 ) -> Result<Json<RecommendationsResponse>, ApiError> {
     check_range("top", query.top, MAX_TOP)?;
+    let overrides = overrides_of(&query)?;
 
+    let Some(user) = state.store.user(query.user).await? else {
+        return Err(ApiError::NotFound(format!("user {} not found", query.user)));
+    };
     let history = state.store.history(query.user).await?;
     let history_len = history.len();
 
     // ranking is CPU work, keep it off the async threads
-    let ranker = state.ranker.clone();
+    let recommender = state.recommender.clone();
     let top = query.top;
     let ranked = tokio::task::spawn_blocking(move || {
-        let ranker = ranker.read().expect("the ranker lock is never poisoned");
-        ranker.recommend(&RecommendationContext { history }, top)
+        let recommender = recommender.read().expect("the recommender lock is never poisoned");
+        recommender.recommend(history, user.country.as_deref(), top, overrides)
     })
     .await?;
-
-    let mut items = Vec::with_capacity(ranked.len());
-    for recommendation in ranked {
-        let track = state.store.track(recommendation.track_index).await?;
-        items.push(RecommendationDto::new(recommendation, track));
-    }
 
     Ok(Json(RecommendationsResponse {
         user: query.user,
         history_len,
-        items,
+        items: describe(&state, ranked).await?,
     }))
+}
+
+/// Tracks that fit after the given one, with the reasons behind each.
+#[utoipa::path(
+    get,
+    path = "/tracks/{track_index}/similar",
+    tag = "tracks",
+    params(
+        ("track_index" = u32, Path, description = "Index of the track"),
+        SimilarQuery,
+    ),
+    responses(
+        (status = 200, description = "Ranked tracks, best first", body = Vec<RecommendationDto>),
+        (status = 400, description = "`top` is out of range", body = ErrorBody),
+        (status = 404, description = "No such track", body = ErrorBody),
+    )
+)]
+pub async fn similar_tracks(
+    State(state): State<AppState>,
+    Path(track_index): Path<u32>,
+    Query(query): Query<SimilarQuery>,
+) -> Result<Json<Vec<RecommendationDto>>, ApiError> {
+    check_range("top", query.top, MAX_TOP)?;
+    if state.store.track(track_index).await?.is_none() {
+        return Err(ApiError::NotFound(format!("track {track_index} not found")));
+    }
+
+    let recommender = state.recommender.clone();
+    let top = query.top;
+    let ranked = tokio::task::spawn_blocking(move || {
+        let recommender = recommender.read().expect("the recommender lock is never poisoned");
+        recommender.recommend(vec![track_index], None, top, WeightOverrides::default())
+    })
+    .await?;
+
+    Ok(Json(describe(&state, ranked).await?))
 }
 
 /// Records that a user listened to a track.
@@ -134,6 +222,41 @@ pub async fn add_event(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
+/// Creates a listener without history. Their first recommendations are popular tracks.
+#[utoipa::path(
+    post,
+    path = "/users",
+    tag = "users",
+    request_body = NewUser,
+    responses(
+        (status = 201, description = "The new user", body = UserDto),
+        (status = 400, description = "A field is invalid", body = ErrorBody),
+    )
+)]
+pub async fn create_user(
+    State(state): State<AppState>,
+    Json(new): Json<NewUser>,
+) -> Result<(StatusCode, Json<UserDto>), ApiError> {
+    let country = clean("country", new.country, MAX_COUNTRY_LEN)?;
+    let gender = clean("gender", new.gender, MAX_GENDER_LEN)?;
+    if let Some(age) = new.age {
+        if !(1.0..=120.0).contains(&age) {
+            return Err(ApiError::BadRequest("age must be between 1 and 120".to_string()));
+        }
+    }
+
+    let user = state.store.create_user(country, new.age, gender).await?;
+    let created = UserDto {
+        user_index: user.user_index,
+        gender: user.gender,
+        age: user.age,
+        country: user.country,
+        history_len: 0,
+        recent: Vec::new(),
+    };
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
 /// Profile of a user with the tracks they listened to last.
 #[utoipa::path(
     get,
@@ -169,36 +292,6 @@ pub async fn user(
         history_len: history.len(),
         recent,
     }))
-}
-
-/// What the current models were trained on and whether a training is running.
-#[utoipa::path(
-    get,
-    path = "/model",
-    tag = "model",
-    responses((status = 200, description = "Model status", body = ModelStatus))
-)]
-pub async fn model_status(State(state): State<AppState>) -> Json<ModelStatus> {
-    Json(state.status())
-}
-
-/// Starts retraining in the background. Requests keep using the old models until it ends.
-#[utoipa::path(
-    post,
-    path = "/model/retrain",
-    tag = "model",
-    responses(
-        (status = 202, description = "Training started", body = ModelStatus),
-        (status = 409, description = "Training is already running", body = ErrorBody),
-    )
-)]
-pub async fn retrain(
-    State(state): State<AppState>,
-) -> Result<(StatusCode, Json<ModelStatus>), ApiError> {
-    if !state.retrain() {
-        return Err(ApiError::Conflict("training is already running".to_string()));
-    }
-    Ok((StatusCode::ACCEPTED, Json(state.status())))
 }
 
 /// Lists users, the most active first. Used to pick who to recommend for.
@@ -250,4 +343,34 @@ pub async fn search_tracks(
 
     let tracks = state.store.search_tracks(text, query.limit).await?;
     Ok(Json(tracks.into_iter().map(TrackDto::from).collect()))
+}
+
+/// What the current models were trained on and whether a training is running.
+#[utoipa::path(
+    get,
+    path = "/model",
+    tag = "model",
+    responses((status = 200, description = "Model status", body = ModelStatus))
+)]
+pub async fn model_status(State(state): State<AppState>) -> Json<ModelStatus> {
+    Json(state.status())
+}
+
+/// Starts retraining in the background. Requests keep using the old models until it ends.
+#[utoipa::path(
+    post,
+    path = "/model/retrain",
+    tag = "model",
+    responses(
+        (status = 202, description = "Training started", body = ModelStatus),
+        (status = 409, description = "Training is already running", body = ErrorBody),
+    )
+)]
+pub async fn retrain(
+    State(state): State<AppState>,
+) -> Result<(StatusCode, Json<ModelStatus>), ApiError> {
+    if !state.retrain() {
+        return Err(ApiError::Conflict("training is already running".to_string()));
+    }
+    Ok((StatusCode::ACCEPTED, Json(state.status())))
 }

@@ -10,13 +10,14 @@ use crate::db::store::Store;
 use crate::engine::{EngineConfig, assemble};
 use crate::etl::sessionizer::sessionize_all;
 use crate::models::adapters::TrendsGenerator;
-use crate::ranker::Ranker;
+use crate::models::catalog::Catalog;
+use crate::recommender::Recommender;
 
 const LOCK: &str = "a lock in the app state is never poisoned";
 
 /// Freshly trained models and what they were trained on.
 pub struct Trained {
-    pub ranker: Ranker,
+    pub recommender: Recommender,
     pub events: usize,
     pub sessions: usize,
     pub seconds: f32,
@@ -49,7 +50,7 @@ impl ModelStatus {
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
-    pub ranker: Arc<RwLock<Ranker>>,
+    pub recommender: Arc<RwLock<Recommender>>,
     status: Arc<Mutex<ModelStatus>>,
     config: EngineConfig,
 }
@@ -59,7 +60,7 @@ impl AppState {
         let status = ModelStatus::new(&trained);
         Self {
             store,
-            ranker: Arc::new(RwLock::new(trained.ranker)),
+            recommender: Arc::new(RwLock::new(trained.recommender)),
             status: Arc::new(Mutex::new(status)),
             config,
         }
@@ -88,7 +89,7 @@ impl AppState {
         true
     }
 
-    /// Requests keep using the old ranker until the new one is ready.
+    /// Requests keep using the old models until the new ones are ready.
     async fn run_training(&self) {
         match train(&self.store, self.config.clone()).await {
             Ok(trained) => {
@@ -100,7 +101,10 @@ impl AppState {
                     "models retrained"
                 );
                 // the old models are dropped after the lock is released
-                let old = std::mem::replace(&mut *self.ranker.write().expect(LOCK), trained.ranker);
+                let old = std::mem::replace(
+                    &mut *self.recommender.write().expect(LOCK),
+                    trained.recommender,
+                );
                 drop(old);
                 *self.status.lock().expect(LOCK) = status;
             }
@@ -120,6 +124,8 @@ impl AppState {
 pub async fn train(store: &Store, config: EngineConfig) -> Result<Trained, DbError> {
     let started = Instant::now();
     let events = store.all_events().await?;
+    let tracks = store.all_tracks().await?;
+    let users = store.all_users().await?;
     let trending = store
         .trending(config.trend_window, config.trend_pool)
         .await?;
@@ -128,10 +134,12 @@ pub async fn train(store: &Store, config: EngineConfig) -> Result<Trained, DbErr
         let sessions = sessionize_all(events.clone(), config.session_gap);
         let trends = TrendsGenerator::from_ranked(trending);
         let ranker = assemble(trends, &events, &sessions, &config);
+        let catalog = Catalog::build(&tracks, &users, &events, config.recommender.cold_start_pool);
+
         Trained {
+            recommender: Recommender::new(ranker, catalog, config.recommender.clone()),
             events: events.len(),
             sessions: sessions.len(),
-            ranker,
             seconds: started.elapsed().as_secs_f32(),
         }
     })

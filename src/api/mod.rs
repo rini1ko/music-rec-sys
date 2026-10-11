@@ -23,8 +23,9 @@ pub fn router(state: AppState) -> Router {
         .route("/users/{user_index}", get(handlers::user))
         .route("/model", get(handlers::model_status))
         .route("/model/retrain", post(handlers::retrain))
-        .route("/users", get(handlers::list_users))
         .route("/tracks", get(handlers::search_tracks))
+        .route("/users", get(handlers::list_users).post(handlers::create_user))
+        .route("/tracks/{track_index}/similar", get(handlers::similar_tracks))
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", docs::ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -245,6 +246,7 @@ mod tests {
             "/model/retrain",
             "/users",
             "/tracks",
+            "/tracks/{track_index}/similar",
         ] {
             assert!(body["paths"][path].is_object(), "{path} is not documented");
         }
@@ -318,6 +320,54 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let (status, _) = get_json("/tracks").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn new_user_gets_popular_tracks() {
+        let app = app().await;
+        let (status, created) = send(&app, "POST", "/users", Some(r#"{"country":"UK"}"#)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created["history_len"], 0);
+
+        let uri = format!("/recommendations?user={}&top=5", created["user_index"]);
+        let (status, body) = send(&app, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body["items"].as_array().unwrap().is_empty());
+        assert_eq!(body["items"][0]["reasons"][0]["source"], "popular");
+    }
+
+    #[tokio::test]
+    async fn invalid_new_user_is_rejected() {
+        let app = app().await;
+        let (status, _) = send(&app, "POST", "/users", Some(r#"{"age":500}"#)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn similar_tracks_follow_the_track() {
+        let (status, body) = get_json("/tracks/10/similar?top=5").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let items = body.as_array().unwrap();
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|item| item["track_index"] != 10));
+    }
+
+    #[tokio::test]
+    async fn similar_tracks_of_an_unknown_track_is_404() {
+        let (status, _) = get_json("/tracks/999/similar").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn weights_can_be_changed_per_request() {
+        let silent = "/recommendations?user=1&trends=0&markov=0&co_listening=0&cf=0";
+        let (status, body) = get_json(silent).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["items"].as_array().unwrap().is_empty());
+
+        let (status, _) = get_json("/recommendations?user=1&cf=-1").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }

@@ -74,11 +74,24 @@ impl Ranker {
     }
 
     pub fn recommend(&self, context: &RecommendationContext, limit: usize) -> Vec<Recommendation> {
+        self.recommend_with(context, limit, |_, weight| weight)
+    }
+
+    /// Like `recommend`, but `weight_of(source, configured_weight)` picks the weight
+    /// of every model for this call only. The ranker itself is not changed.
+    pub fn recommend_with(
+        &self,
+        context: &RecommendationContext,
+        limit: usize,
+        weight_of: impl Fn(Source, f64) -> f64,
+    ) -> Vec<Recommendation> {
         let heard: HashSet<u32> = context.history.iter().copied().collect();
         let mut merged: HashMap<u32, Recommendation> = HashMap::new();
 
         for entry in &self.generators {
-            if !entry.weight.is_finite() || entry.weight <= 0.0 {
+            let source = entry.generator.source();
+            let weight = weight_of(source, entry.weight);
+            if !weight.is_finite() || weight <= 0.0 {
                 continue;
             }
 
@@ -97,7 +110,7 @@ impl Ranker {
             };
 
             for candidate in candidates {
-                let contribution = entry.weight * candidate.score / max_score;
+                let contribution = weight * candidate.score / max_score;
                 let recommendation =
                     merged
                         .entry(candidate.track_index)
@@ -108,7 +121,7 @@ impl Ranker {
                         });
                 recommendation.score += contribution;
                 recommendation.reasons.push(Reason {
-                    source: entry.generator.source(),
+                    source,
                     contribution,
                 });
             }

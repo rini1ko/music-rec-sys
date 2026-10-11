@@ -8,6 +8,9 @@ const STYLES: Record<Source, { label: string; classes: string }> = {
     classes: "bg-emerald-500/15 text-emerald-200 ring-emerald-500/30",
   },
   cf: { label: "Similar listeners", classes: "bg-sky-500/15 text-sky-200 ring-sky-500/30" },
+  artist: { label: "Favorite artist", classes: "bg-pink-500/15 text-pink-200 ring-pink-500/30" },
+  country: { label: "Popular nearby", classes: "bg-teal-500/15 text-teal-200 ring-teal-500/30" },
+  popular: { label: "Popular", classes: "bg-slate-500/20 text-slate-200 ring-slate-500/30" },
 };
 
 export function ReasonBadge({ reason }: { reason: Reason }) {

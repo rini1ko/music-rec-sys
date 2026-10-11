@@ -1,4 +1,4 @@
-export type Source = "trends" | "markov" | "co_listening" | "cf";
+export type Source = "trends" | "markov" | "co_listening" | "cf" | "artist" | "country" | "popular";
 
 export interface Reason {
   source: Source;
