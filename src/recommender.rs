@@ -259,7 +259,12 @@ mod tests {
         let favorite = list.iter().find(|item| item.track_index == 5).unwrap();
 
         assert!((favorite.score - 0.3).abs() < 1e-9);
-        assert!(favorite.reasons.iter().any(|reason| reason.source == Source::Artist));
+        assert!(
+            favorite
+                .reasons
+                .iter()
+                .any(|reason| reason.source == Source::Artist)
+        );
     }
 
     #[test]
@@ -271,7 +276,11 @@ mod tests {
         };
 
         assert!(recommender.recommend(vec![6], None, 5, muted).is_empty());
-        assert!(!recommender.recommend(vec![6], None, 5, WeightOverrides::default()).is_empty());
+        assert!(
+            !recommender
+                .recommend(vec![6], None, 5, WeightOverrides::default())
+                .is_empty()
+        );
     }
 
     #[test]

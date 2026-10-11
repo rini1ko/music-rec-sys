@@ -37,7 +37,7 @@ impl Store {
     pub async fn add_events(&self, events: Vec<ListenEvent>) -> Result<(), DbError> {
         queries::insert_events(&self.db, events).await
     }
-    
+
     pub async fn add_sessions(&self, sessions: Vec<Session>) -> Result<(), DbError> {
         queries::insert_sessions(&self.db, sessions).await
     }
@@ -103,8 +103,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::test_utils::{event_of, track, user};
     use crate::domain::Track;
+    use crate::domain::test_utils::{event_of, track, user};
 
     #[tokio::test]
     async fn events_are_stored_and_read_back() {
@@ -128,7 +128,7 @@ mod tests {
         let result = store.add_events(vec![event_of(2, 10, 0)]).await;
         assert_eq!(result, Err(DbError::UserNotFound(2)));
     }
-    
+
     fn named(index: u32, title: &str, artist: &str) -> Track {
         Track {
             track_index: index,
@@ -147,7 +147,11 @@ mod tests {
             .unwrap();
         store.add_tracks(vec![track(10), track(11)]).await.unwrap();
         store
-            .add_events(vec![event_of(2, 10, 0), event_of(2, 11, 1), event_of(1, 10, 0)])
+            .add_events(vec![
+                event_of(2, 10, 0),
+                event_of(2, 11, 1),
+                event_of(1, 10, 0),
+            ])
             .await
             .unwrap();
 
@@ -178,8 +182,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(store.search_tracks("underworld", 10).await.unwrap().len(), 2);
-        assert_eq!(store.search_tracks("kid", 10).await.unwrap()[0].track_index, 3);
+        assert_eq!(
+            store.search_tracks("underworld", 10).await.unwrap().len(),
+            2
+        );
+        assert_eq!(
+            store.search_tracks("kid", 10).await.unwrap()[0].track_index,
+            3
+        );
         assert_eq!(store.search_tracks("underworld", 1).await.unwrap().len(), 1);
         assert!(store.search_tracks("zzz", 10).await.unwrap().is_empty());
     }
@@ -187,7 +197,10 @@ mod tests {
     #[tokio::test]
     async fn new_users_get_the_next_index() {
         let store = Store::open("sqlite::memory:").await.unwrap();
-        let first = store.create_user(Some("UK".to_string()), None, None).await.unwrap();
+        let first = store
+            .create_user(Some("UK".to_string()), None, None)
+            .await
+            .unwrap();
         let second = store.create_user(None, Some(30.0), None).await.unwrap();
 
         assert_eq!((first.user_index, second.user_index), (0, 1));

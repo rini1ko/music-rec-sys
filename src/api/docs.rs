@@ -1,8 +1,8 @@
 use utoipa::OpenApi;
 
 use crate::api::dto::{
-    ErrorBody, EventDto, HealthDto, NewEvent, ReasonDto, RecommendationDto,
-    RecommendationsResponse, TrackDto, UserDto, UserSummaryDto, UsersResponse, NewUser
+    ErrorBody, EventDto, HealthDto, NewEvent, NewUser, ReasonDto, RecommendationDto,
+    RecommendationsResponse, TrackDto, UserDto, UserSummaryDto, UsersResponse,
 };
 use crate::api::handlers;
 use crate::api::state::ModelStatus;

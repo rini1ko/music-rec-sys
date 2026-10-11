@@ -24,8 +24,14 @@ pub fn router(state: AppState) -> Router {
         .route("/model", get(handlers::model_status))
         .route("/model/retrain", post(handlers::retrain))
         .route("/tracks", get(handlers::search_tracks))
-        .route("/users", get(handlers::list_users).post(handlers::create_user))
-        .route("/tracks/{track_index}/similar", get(handlers::similar_tracks))
+        .route(
+            "/users",
+            get(handlers::list_users).post(handlers::create_user),
+        )
+        .route(
+            "/tracks/{track_index}/similar",
+            get(handlers::similar_tracks),
+        )
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", docs::ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -53,9 +59,9 @@ mod tests {
 
     use super::*;
     use crate::db::store::Store;
+    use crate::domain::Track;
     use crate::domain::test_utils::{event_of, track, user};
     use crate::engine::EngineConfig;
-    use crate::domain::Track;
 
     async fn state() -> AppState {
         let store = Store::open("sqlite::memory:").await.unwrap();
@@ -83,7 +89,12 @@ mod tests {
         router(state().await)
     }
 
-    async fn send(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, Value) {
+    async fn send(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<&str>,
+    ) -> (StatusCode, Value) {
         let request = Request::builder()
             .method(method)
             .uri(uri)
@@ -145,7 +156,7 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
-        #[tokio::test]
+    #[tokio::test]
     async fn posted_event_shows_up_in_the_history() {
         let app = app().await;
         let (status, body) = send(&app, "POST", "/events", Some(r#"{"user":1,"track":12}"#)).await;
@@ -233,7 +244,7 @@ mod tests {
             .collect();
         assert!(tracks.contains(&13));
     }
-        #[tokio::test]
+    #[tokio::test]
     async fn openapi_document_lists_the_endpoints() {
         let (status, body) = get_json("/api-docs/openapi.json").await;
         assert_eq!(status, StatusCode::OK);

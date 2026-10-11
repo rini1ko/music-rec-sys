@@ -2,8 +2,8 @@ mod cli;
 mod commands;
 mod logging;
 
-use std::process::ExitCode;
 use clap::Parser;
+use std::process::ExitCode;
 
 fn main() -> ExitCode {
     match commands::run(cli::Cli::parse().command) {

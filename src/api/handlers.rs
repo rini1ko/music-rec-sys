@@ -133,7 +133,9 @@ pub async fn recommendations(
     let recommender = state.recommender.clone();
     let top = query.top;
     let ranked = tokio::task::spawn_blocking(move || {
-        let recommender = recommender.read().expect("the recommender lock is never poisoned");
+        let recommender = recommender
+            .read()
+            .expect("the recommender lock is never poisoned");
         recommender.recommend(history, user.country.as_deref(), top, overrides)
     })
     .await?;
@@ -173,7 +175,9 @@ pub async fn similar_tracks(
     let recommender = state.recommender.clone();
     let top = query.top;
     let ranked = tokio::task::spawn_blocking(move || {
-        let recommender = recommender.read().expect("the recommender lock is never poisoned");
+        let recommender = recommender
+            .read()
+            .expect("the recommender lock is never poisoned");
         recommender.recommend(vec![track_index], None, top, WeightOverrides::default())
     })
     .await?;
@@ -239,10 +243,12 @@ pub async fn create_user(
 ) -> Result<(StatusCode, Json<UserDto>), ApiError> {
     let country = clean("country", new.country, MAX_COUNTRY_LEN)?;
     let gender = clean("gender", new.gender, MAX_GENDER_LEN)?;
-    if let Some(age) = new.age {
-        if !(1.0..=120.0).contains(&age) {
-            return Err(ApiError::BadRequest("age must be between 1 and 120".to_string()));
-        }
+    if let Some(age) = new.age
+        && !(1.0..=120.0).contains(&age)
+    {
+        return Err(ApiError::BadRequest(
+            "age must be between 1 and 120".to_string(),
+        ));
     }
 
     let user = state.store.create_user(country, new.age, gender).await?;
@@ -370,7 +376,9 @@ pub async fn retrain(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<ModelStatus>), ApiError> {
     if !state.retrain() {
-        return Err(ApiError::Conflict("training is already running".to_string()));
+        return Err(ApiError::Conflict(
+            "training is already running".to_string(),
+        ));
     }
     Ok((StatusCode::ACCEPTED, Json(state.status())))
 }

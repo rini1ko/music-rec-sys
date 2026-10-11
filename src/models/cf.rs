@@ -231,8 +231,16 @@ mod tests {
             ..CfConfig::default()
         };
 
-        assert!(CfModel::train(&events, &strict).recommend(&[1, 2], 10).is_empty());
-        assert!(!CfModel::train(&events, &lenient()).recommend(&[1, 2], 10).is_empty());
+        assert!(
+            CfModel::train(&events, &strict)
+                .recommend(&[1, 2], 10)
+                .is_empty()
+        );
+        assert!(
+            !CfModel::train(&events, &lenient())
+                .recommend(&[1, 2], 10)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -244,7 +252,11 @@ mod tests {
         };
         let model = CfModel::train(&events, &config);
 
-        let tracks: Vec<u32> = model.recommend(&[1, 2], 10).iter().map(|&(t, _)| t).collect();
+        let tracks: Vec<u32> = model
+            .recommend(&[1, 2], 10)
+            .iter()
+            .map(|&(t, _)| t)
+            .collect();
         assert_eq!(tracks, vec![10]);
     }
 

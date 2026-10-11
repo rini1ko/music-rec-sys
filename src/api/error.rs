@@ -1,7 +1,7 @@
+use crate::api::dto::ErrorBody;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use crate::api::dto::ErrorBody;
 use tokio::task::JoinError;
 
 use crate::db::error::DbError;

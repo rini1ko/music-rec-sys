@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{Duration, NaiveDateTime};
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
-    FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
-    RelationTrait, Set, TransactionTrait,
+    FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, RelationTrait,
+    Set, TransactionTrait,
 };
 use tokio::runtime::{Builder, Runtime};
 
@@ -120,7 +120,10 @@ pub(crate) async fn insert_users(db: &DatabaseConnection, users: Vec<User>) -> R
     Ok(())
 }
 
-pub(crate) async fn insert_tracks(db: &DatabaseConnection, tracks: Vec<Track>) -> Result<(), DbError> {
+pub(crate) async fn insert_tracks(
+    db: &DatabaseConnection,
+    tracks: Vec<Track>,
+) -> Result<(), DbError> {
     let txn = db.begin().await?;
 
     let mut fresh: BTreeMap<u32, Track> = BTreeMap::new();
@@ -134,14 +137,19 @@ pub(crate) async fn insert_tracks(db: &DatabaseConnection, tracks: Vec<Track>) -
 
     let rows: Vec<track::ActiveModel> = fresh.into_values().map(track_row).collect();
     for chunk in rows.chunks(CHUNK) {
-        track::Entity::insert_many(chunk.to_vec()).exec(&txn).await?;
+        track::Entity::insert_many(chunk.to_vec())
+            .exec(&txn)
+            .await?;
     }
 
     txn.commit().await?;
     Ok(())
 }
 
-pub(crate) async fn insert_events(db: &DatabaseConnection, events: Vec<ListenEvent>) -> Result<(), DbError> {
+pub(crate) async fn insert_events(
+    db: &DatabaseConnection,
+    events: Vec<ListenEvent>,
+) -> Result<(), DbError> {
     // if anything below fails, `txn` is dropped and rolled back
     let txn = db.begin().await?;
 
@@ -157,7 +165,10 @@ pub(crate) async fn insert_events(db: &DatabaseConnection, events: Vec<ListenEve
     Ok(())
 }
 
-pub(crate) async fn insert_sessions(db: &DatabaseConnection, sessions: Vec<Session>) -> Result<(), DbError> {
+pub(crate) async fn insert_sessions(
+    db: &DatabaseConnection,
+    sessions: Vec<Session>,
+) -> Result<(), DbError> {
     let txn = db.begin().await?;
 
     ensure_users(&txn, sessions.iter().map(|item| item.user_index).collect()).await?;
@@ -256,7 +267,11 @@ pub(crate) async fn trending(
 }
 
 pub(crate) async fn history(db: &DatabaseConnection, user_index: u32) -> Result<Vec<u32>, DbError> {
-    if user::Entity::find_by_id(user_index).one(db).await?.is_none() {
+    if user::Entity::find_by_id(user_index)
+        .one(db)
+        .await?
+        .is_none()
+    {
         return Err(DbError::UserNotFound(user_index));
     }
 
@@ -613,9 +628,13 @@ mod tests {
     #[test]
     fn session_tracks_keep_their_order() {
         let mut repo = repo_with(&[1], &[10, 11, 12]);
-        repo.add_sessions(vec![session_of(1, &[12, 10, 11])]).unwrap();
+        repo.add_sessions(vec![session_of(1, &[12, 10, 11])])
+            .unwrap();
 
-        assert_eq!(repo.all_sessions().unwrap(), vec![session_of(1, &[12, 10, 11])]);
+        assert_eq!(
+            repo.all_sessions().unwrap(),
+            vec![session_of(1, &[12, 10, 11])]
+        );
     }
 
     #[test]

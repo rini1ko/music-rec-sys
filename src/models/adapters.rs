@@ -4,10 +4,10 @@ use chrono::Duration;
 
 use crate::domain::ListenEvent;
 use crate::models::candidate::{Candidate, CandidateGenerator, RecommendationContext, Source};
+use crate::models::cf::CfModel;
 use crate::models::co_listening::CoListeningGraph;
 use crate::models::markov::MarkovModel;
 use crate::models::trends::trending;
-use crate::models::cf::CfModel;
 
 /// Popular tracks. Ignores the user, so it also covers users without history.
 pub struct TrendsGenerator {
@@ -158,7 +158,10 @@ mod tests {
     }
 
     fn pairs(candidates: &[Candidate]) -> Vec<(u32, f64)> {
-        candidates.iter().map(|c| (c.track_index, c.score)).collect()
+        candidates
+            .iter()
+            .map(|c| (c.track_index, c.score))
+            .collect()
     }
 
     fn lenient_graph() -> CoListeningGraph {
@@ -224,7 +227,7 @@ mod tests {
         assert_eq!(candidates[0].track_index, 1);
         assert!((candidates[0].score - 2.0 / 3.0).abs() < 1e-9);
     }
-    
+
     #[test]
     fn cf_generator_proposes_tracks_of_similar_users() {
         use crate::domain::test_utils::event_of;

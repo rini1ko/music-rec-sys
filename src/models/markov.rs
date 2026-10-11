@@ -53,11 +53,8 @@ mod tests {
 
     #[test]
     fn probabilities_follow_transition_counts() {
-        let model = MarkovModel::train(&[
-            session(&[1, 2, 3]),
-            session(&[1, 2, 4]),
-            session(&[1, 3]),
-        ]);
+        let model =
+            MarkovModel::train(&[session(&[1, 2, 3]), session(&[1, 2, 4]), session(&[1, 3])]);
         let next = model.predict(1, 5);
 
         assert_eq!(next.len(), 2);

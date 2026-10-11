@@ -231,7 +231,7 @@ mod tests {
         let repo = MemoryRepository::default();
         assert_eq!(repo.get_track(5), Ok(None));
     }
-    
+
     #[test]
     fn trending_counts_back_from_the_latest_event() {
         let mut repo = repo_with(&[1], &[1, 2, 3]);

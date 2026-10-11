@@ -121,7 +121,7 @@ pub struct ServeArgs {
     /// Retrain the models every N minutes, 0 means only on request
     #[arg(long, default_value_t = 0)]
     pub retrain_minutes: u64,
-    
+
     /// Browser origins allowed to call the API (repeat the flag for several)
     #[arg(
         long = "cors-origin",
@@ -180,7 +180,15 @@ mod tests {
 
     #[test]
     fn recommend_accepts_path_and_options_in_any_order() {
-        let cli = parse(&["recommend", "-u", "7", "data/big.csv", "--top", "3", "--lenient"]);
+        let cli = parse(&[
+            "recommend",
+            "-u",
+            "7",
+            "data/big.csv",
+            "--top",
+            "3",
+            "--lenient",
+        ]);
         let Some(Command::Recommend(args)) = cli.unwrap().command else {
             panic!("expected the recommend command");
         };
@@ -228,7 +236,7 @@ mod tests {
     fn unknown_command_is_rejected() {
         assert!(parse(&["dance"]).is_err());
     }
-    
+
     #[test]
     fn etl_has_defaults() {
         let Some(Command::Etl(args)) = parse(&["etl"]).unwrap().command else {

@@ -20,7 +20,11 @@ impl Catalog {
 
         let country_of: HashMap<u32, &str> = users
             .iter()
-            .filter_map(|user| user.country.as_deref().map(|country| (user.user_index, country)))
+            .filter_map(|user| {
+                user.country
+                    .as_deref()
+                    .map(|country| (user.user_index, country))
+            })
             .collect();
 
         let mut overall: HashMap<u32, usize> = HashMap::new();

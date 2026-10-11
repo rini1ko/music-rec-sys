@@ -1,23 +1,25 @@
 use anyhow::{Context, Result, bail};
 use chrono::Duration;
-use std::path::Path;
-use std::fs::File;
-use std::time::Instant;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::fs::File;
+use std::path::Path;
+use std::time::Instant;
 
+use music_recommendation_system::api::{self, state::AppState};
 use music_recommendation_system::db::memory::MemoryRepository;
 use music_recommendation_system::db::repository::Repository;
-use music_recommendation_system::db::store::Store;
 use music_recommendation_system::db::sea_repository::SeaOrmRepository;
+use music_recommendation_system::db::store::Store;
 use music_recommendation_system::engine::{EngineConfig, Weights, build_ranker};
+use music_recommendation_system::etl::loader::{LoadReport, load_from_path, load_from_reader};
 use music_recommendation_system::evaluation::split::SplitMode;
 use music_recommendation_system::evaluation::tuning::tune;
 use music_recommendation_system::evaluation::{EvalConfig, Evaluator};
 use music_recommendation_system::models::candidate::RecommendationContext;
-use music_recommendation_system::etl::loader::{LoadReport, load_from_path, load_from_reader};
-use music_recommendation_system::api::{self, state::AppState};
 
-use crate::cli::{Command, DEFAULT_DATA, DataArgs, EtlArgs, EvalArgs, RecommendArgs, TuneArgs, ServeArgs};
+use crate::cli::{
+    Command, DEFAULT_DATA, DataArgs, EtlArgs, EvalArgs, RecommendArgs, ServeArgs, TuneArgs,
+};
 use crate::logging;
 
 pub fn run(command: Option<Command>) -> Result<()> {
@@ -58,8 +60,8 @@ fn open(args: &DataArgs) -> Result<Box<dyn Repository>> {
     if !Path::new(db).exists() {
         bail!("database {db} not found, run `etl` first");
     }
-    let repo = SeaOrmRepository::open(&sqlite_url(db))
-        .with_context(|| format!("failed to open {db}"))?;
+    let repo =
+        SeaOrmRepository::open(&sqlite_url(db)).with_context(|| format!("failed to open {db}"))?;
     println!("reading from {db}");
     Ok(Box::new(repo))
 }
@@ -102,7 +104,7 @@ fn etl(args: &EtlArgs) -> Result<()> {
 
     print_report(&report);
     println!("done in {:.1}s", started.elapsed().as_secs_f32());
-    
+
     let counts = repo.counts()?;
     println!(
         "stored in {}: users {}, tracks {}, events {}, sessions {}",
@@ -147,7 +149,7 @@ async fn run_server(args: &ServeArgs) -> Result<()> {
         api::state::spawn_schedule(state.clone(), every);
         tracing::info!(minutes = args.retrain_minutes, "scheduled retraining is on");
     }
-    
+
     let cors = api::cors(&args.cors_origins).context("invalid --cors-origin")?;
     let app = api::router(state).layer(cors);
 
@@ -230,7 +232,11 @@ fn recommend(args: &RecommendArgs) -> Result<()> {
             .and_then(|t| t.artist_name.as_deref())
             .unwrap_or("unknown artist");
 
-        println!("{:>3}. {title} - {artist}  (score {:.3})", position + 1, rec.score);
+        println!(
+            "{:>3}. {title} - {artist}  (score {:.3})",
+            position + 1,
+            rec.score
+        );
         println!("     {}", rec.explain());
     }
     Ok(())
@@ -318,7 +324,10 @@ fn tune_weights(args: &TuneArgs) -> Result<()> {
 
     println!("\ntop {} on the tuning half:", tuned.top.len());
     for (weights, report) in &tuned.top {
-        println!("  {weights}   ndcg {:.4}  hit {:.4}", report.ndcg, report.hit_rate);
+        println!(
+            "  {weights}   ndcg {:.4}  hit {:.4}",
+            report.ndcg, report.hit_rate
+        );
     }
 
     println!("\n{:<26} {:>12} {:>12}", "", "tuning half", "other half");
@@ -417,7 +426,7 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
-        #[test]
+    #[test]
     fn commands_can_read_from_the_database() {
         let path = format!("target/db-read-test-{}.db", std::process::id());
         let _ = std::fs::remove_file(&path);

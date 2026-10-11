@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn model_weights_change_the_result() {
         let eval = global(3, 2.0 / 18.0);
-                let markov_only = lenient_engine().with_weights(Weights {
+        let markov_only = lenient_engine().with_weights(Weights {
             markov: 1.0,
             ..Weights::ZERO
         });

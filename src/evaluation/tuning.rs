@@ -40,8 +40,8 @@ pub struct Tuned {
 /// one: weights picked and judged on the same users always look better than
 /// they really are.
 pub fn tune(evaluator: &mut Evaluator, steps: usize, default: Weights, top: usize) -> Tuned {
-    let tuning_half = |position: usize| position % 2 == 0;
-    let holdout_half = |position: usize| position % 2 == 1;
+    let tuning_half = |position: usize| position.is_multiple_of(2);
+    let holdout_half = |position: usize| !position.is_multiple_of(2);
 
     let mut results: Vec<(Weights, EvalReport)> = weight_grid(steps)
         .into_iter()
@@ -100,7 +100,10 @@ mod tests {
     fn grid_contains_single_model_corners() {
         let grid = weight_grid(4);
         assert!(grid.iter().any(|w| w.markov == 1.0 && w.trends == 0.0));
-        assert!(grid.iter().any(|w| w.co_listening == 1.0 && w.trends == 0.0));
+        assert!(
+            grid.iter()
+                .any(|w| w.co_listening == 1.0 && w.trends == 0.0)
+        );
         assert!(grid.iter().any(|w| w.cf == 1.0 && w.markov == 0.0));
     }
 

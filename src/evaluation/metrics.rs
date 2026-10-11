@@ -12,7 +12,11 @@ pub fn precision_at_k(recommended: &[u32], relevant: &HashSet<u32>, k: usize) ->
 /// 1.0 if at least one recommendation in the top-k is relevant, else 0.0.
 /// Averaged over users this is the share of users who got something useful.
 pub fn hit_at_k(recommended: &[u32], relevant: &HashSet<u32>, k: usize) -> f64 {
-    if hits(recommended, relevant, k) > 0 { 1.0 } else { 0.0 }
+    if hits(recommended, relevant, k) > 0 {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 /// Share of the relevant tracks that made it into the top-k.
@@ -113,7 +117,7 @@ mod tests {
         assert_eq!(precision_at_k(&[1], &relevant, 0), 0.0);
         assert_eq!(ndcg_at_k(&[1], &relevant, 0), 0.0);
     }
-    
+
     #[test]
     fn hit_is_one_when_any_recommendation_is_relevant() {
         assert_eq!(hit_at_k(&[9, 1, 8], &set(&[1, 2]), 3), 1.0);

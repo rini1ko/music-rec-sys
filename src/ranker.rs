@@ -59,7 +59,8 @@ impl Ranker {
     }
 
     pub fn with_generator(mut self, generator: Box<dyn CandidateGenerator>, weight: f64) -> Self {
-        self.generators.push(WeightedGenerator { generator, weight });
+        self.generators
+            .push(WeightedGenerator { generator, weight });
         self
     }
 
@@ -104,8 +105,7 @@ impl Ranker {
                 c.score.is_finite() && c.score > 0.0 && !heard.contains(&c.track_index)
             });
 
-            let Some(max_score) = candidates.iter().map(|c| c.score).max_by(f64::total_cmp)
-            else {
+            let Some(max_score) = candidates.iter().map(|c| c.score).max_by(f64::total_cmp) else {
                 continue;
             };
 
@@ -274,7 +274,7 @@ mod tests {
             "popular right now; often played right after your last track"
         );
     }
-    
+
     #[test]
     fn set_weight_changes_the_result_without_rebuilding() {
         let mut ranker = Ranker::new(RankerConfig::default())

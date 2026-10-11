@@ -14,7 +14,7 @@ pub fn sessionize(mut events: Vec<ListenEvent>, gap: Duration) -> Vec<Session> {
     for event in events {
         let start_new = sessions
             .last()
-            .map_or(true, |s| event.timestamp - s.end > gap);
+            .is_none_or(|s| event.timestamp - s.end > gap);
 
         if start_new {
             sessions.push(Session {

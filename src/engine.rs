@@ -155,21 +155,6 @@ mod tests {
     use crate::domain::test_utils::{event_of, session_of, track, user};
     use crate::models::candidate::RecommendationContext;
 
-    fn lenient_config() -> EngineConfig {
-        EngineConfig {
-            co_listening: CoListeningConfig {
-                min_cooccurrence: 1,
-                min_jaccard: 0.0,
-                ..CoListeningConfig::default()
-            },
-            cf: CfConfig {
-                min_overlap: 1,
-                ..CfConfig::default()
-            },
-            ..EngineConfig::default()
-        }
-    }
-
     fn sample_repo() -> MemoryRepository {
         let mut repo = MemoryRepository::default();
         repo.add_users(vec![user(0), user(1), user(2)]).unwrap();
@@ -194,7 +179,7 @@ mod tests {
     #[test]
     fn ranker_built_from_repository_recommends_unheard_tracks() {
         let repo = sample_repo();
-        let ranker = build_ranker(&repo, &lenient_config()).unwrap();
+        let ranker = build_ranker(&repo, &EngineConfig::lenient()).unwrap();
         let context = RecommendationContext {
             history: repo.user_history(2).unwrap(),
         };
