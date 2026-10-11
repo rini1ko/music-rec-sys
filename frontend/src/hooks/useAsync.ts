@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export interface AsyncState<T> {
   data: T | null;
@@ -9,7 +9,7 @@ export interface AsyncState<T> {
 
 interface Settled<T> {
   key: string;
-  version: number;
+  stamp: string;
   data: T | null;
   error: string | null;
 }
@@ -19,34 +19,36 @@ export function messageOf(error: unknown): string {
 }
 
 /**
- * Runs `load` again whenever `key` changes or `reload` is called.
- * While the same key reloads, the old data stays visible.
+ * Loads data again whenever `key` changes, `refresh` changes or `reload` is called.
+ * When only `refresh` or `reload` triggers it, the old data stays visible meanwhile.
  */
-export function useAsync<T>(load: () => Promise<T>, key: string): AsyncState<T> {
+export function useAsync<T>(load: () => Promise<T>, key: string, refresh = 0): AsyncState<T> {
   const [version, setVersion] = useState(0);
   const [settled, setSettled] = useState<Settled<T> | null>(null);
+  const stamp = `${refresh}:${version}`;
+  const reload = useCallback(() => setVersion((value) => value + 1), []);
 
   useEffect(() => {
     let cancelled = false;
     load()
       .then((data) => {
-        if (!cancelled) setSettled({ key, version, data, error: null });
+        if (!cancelled) setSettled({ key, stamp, data, error: null });
       })
       .catch((error: unknown) => {
-        if (!cancelled) setSettled({ key, version, data: null, error: messageOf(error) });
+        if (!cancelled) setSettled({ key, stamp, data: null, error: messageOf(error) });
       });
     return () => {
       cancelled = true;
     };
-    // `load` is a new closure on every render, `key` stands for what it depends on
+    // `load` is a new closure on every render, `key` and `stamp` stand for what it depends on
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, version]);
+  }, [key, stamp]);
 
   const current = settled !== null && settled.key === key ? settled : null;
   return {
     data: current?.data ?? null,
     error: current?.error ?? null,
-    loading: settled === null || settled.key !== key || settled.version !== version,
-    reload: () => setVersion((value) => value + 1),
+    loading: settled === null || settled.key !== key || settled.stamp !== stamp,
+    reload,
   };
 }

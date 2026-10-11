@@ -4,10 +4,17 @@ import { useAsync } from "../hooks/useAsync";
 import { ErrorBox, Spinner } from "./Feedback";
 import { RecommendationCard } from "./RecommendationCard";
 
-export function RecommendationList({ userId }: { userId: number | null }) {
+interface Props {
+  userId: number | null;
+  /** Change it to load the recommendations again, e.g. after a new play. */
+  refresh?: number;
+}
+
+export function RecommendationList({ userId, refresh = 0 }: Props) {
   const result = useAsync<RecommendationsResponse | null>(
     () => (userId === null ? Promise.resolve(null) : api.recommendations(userId, 10)),
     `recommendations-${userId}`,
+    refresh,
   );
 
   if (userId === null) {
@@ -25,11 +32,14 @@ export function RecommendationList({ userId }: { userId: number | null }) {
 
   return (
     <section aria-label="Recommendations">
-      <div className="mb-4">
-        <h2 className="text-lg font-semibold">For user {user}</h2>
-        <p className="text-sm text-slate-400">
-          {history_len.toLocaleString()} tracks in their history
-        </p>
+      <div className="mb-4 flex items-baseline justify-between">
+        <div>
+          <h2 className="text-lg font-semibold">Recommended for user {user}</h2>
+          <p className="text-sm text-slate-400">
+            {history_len.toLocaleString()} tracks in their history
+          </p>
+        </div>
+        {result.loading && <span className="text-xs text-slate-500">Updating...</span>}
       </div>
 
       {items.length === 0 ? (
