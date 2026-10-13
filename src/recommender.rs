@@ -39,6 +39,7 @@ pub struct WeightOverrides {
     pub markov: Option<f64>,
     pub co_listening: Option<f64>,
     pub cf: Option<f64>,
+    pub mf: Option<f64>,
 }
 
 impl WeightOverrides {
@@ -48,6 +49,7 @@ impl WeightOverrides {
             Source::Markov => self.markov,
             Source::CoListening => self.co_listening,
             Source::Cf => self.cf,
+            Source::Mf => self.mf,
             Source::Artist | Source::Country | Source::Popular => None,
         };
         chosen.unwrap_or(configured)
@@ -69,6 +71,17 @@ impl Recommender {
             catalog,
             config,
         }
+    }
+
+    /// Takes the recommender apart again; evaluation lends its ranker to a
+    /// recommender for one run of the rules and needs it back.
+    pub fn into_parts(self) -> (Ranker, Catalog) {
+        (self.ranker, self.catalog)
+    }
+
+    /// What each model keeps, for `/metrics`.
+    pub fn model_sizes(&self) -> Vec<(Source, usize)> {
+        self.ranker.model_sizes()
     }
 
     /// `history` is oldest first. Without history the user gets what is popular.

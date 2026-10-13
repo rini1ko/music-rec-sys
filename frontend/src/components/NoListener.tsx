@@ -1,4 +1,4 @@
-import { EmptyState } from "./ui/EmptyState";
+import { Empty } from "./Feedback";
 
 interface Props {
   /** True when the URL holds something that is not a listener index. */
@@ -9,11 +9,10 @@ interface Props {
 
 export function NoListener({ invalid, purpose }: Props) {
   return invalid ? (
-    <EmptyState
-      title="This is not a listener number"
-      description="The address should end with a listener index, e.g. /recommendations/12. Pick a listener from the list instead."
-    />
+    <Empty title="This is not a listener number">
+      The address should end with a listener index, e.g. /recommendations/12.
+    </Empty>
   ) : (
-    <EmptyState title="Pick a listener" description={`Choose someone from the list to ${purpose}.`} />
+    <Empty title="Pick a listener">Choose someone from the list to {purpose}.</Empty>
   );
 }

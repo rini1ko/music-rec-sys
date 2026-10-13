@@ -8,6 +8,7 @@ use tower::ServiceExt;
 
 use crate::api::router;
 use crate::api::state::{self, AppState};
+use crate::config::ServerSettings;
 use crate::db::store::Store;
 use crate::domain::test_utils::{event_of, track, user};
 use crate::engine::EngineConfig;
@@ -33,7 +34,11 @@ pub(crate) async fn state() -> AppState {
         .unwrap();
 
     let trained = state::train(&store, EngineConfig::lenient()).await.unwrap();
-    AppState::new(store, trained, EngineConfig::lenient())
+    // tests poll quickly, so the rate limit is off unless a test sets its own
+    AppState::new(store, trained, EngineConfig::lenient()).with_settings(ServerSettings {
+        rate_per_second: 0.0,
+        ..ServerSettings::default()
+    })
 }
 
 pub(crate) async fn app() -> Router {

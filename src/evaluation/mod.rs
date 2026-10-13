@@ -1,18 +1,27 @@
+pub mod beyond;
+pub mod compare;
 pub mod metrics;
+mod rules;
 pub mod split;
 pub mod tuning;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use chrono::Duration;
 use thiserror::Error;
 
-use crate::domain::ListenEvent;
+use crate::domain::{ListenEvent, Session, Track, User};
 use crate::engine::{EngineConfig, Weights, build_ranker_from_data};
 use crate::etl::sessionizer::sessionize_all;
+use crate::models::adapters::MarkovGenerator;
 use crate::models::candidate::{RecommendationContext, Source};
+use crate::models::catalog::Catalog;
+use crate::models::markov::MarkovModel;
 use crate::ranker::Ranker;
+use crate::recommender::RecommenderConfig;
+
+use beyond::BeyondAccuracy;
 
 use metrics::{hit_at_k, ndcg_at_k, precision_at_k, recall_at_k};
 use split::{SplitMode, split};
@@ -63,25 +72,37 @@ pub struct EvalReport {
     pub precision: f64,
     pub recall: f64,
     pub ndcg: f64,
+    /// Share of the training catalog shown to at least one user (R4).
+    pub coverage: f64,
+    /// Mean self-information of the shown tracks, in bits: higher is less known.
+    pub novelty: f64,
+    /// Mean share of different artists in one list; `None` without artist data.
+    pub diversity: Option<f64>,
 }
 
 impl fmt::Display for EvalReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "hit@{k} {:.4}  precision@{k} {:.4}  recall@{k} {:.4}  ndcg@{k} {:.4}  (users: {})",
+            "hit@{k} {:.4}  ndcg@{k} {:.4}  precision {:.4}  recall {:.4}  coverage {:.4}  novelty {:.2}",
             self.hit_rate,
+            self.ndcg,
             self.precision,
             self.recall,
-            self.ndcg,
-            self.users_evaluated,
+            self.coverage,
+            self.novelty,
             k = self.k
-        )
+        )?;
+        if let Some(diversity) = self.diversity {
+            write!(f, "  diversity {diversity:.3}")?;
+        }
+        write!(f, "  (users: {})", self.users_evaluated)
     }
 }
 
 /// One user to judge: what we know about them and what they listened to later.
 struct Case {
+    user: u32,
     history: Vec<u32>,
     relevant: HashSet<u32>,
 }
@@ -97,6 +118,19 @@ pub struct Evaluator {
     test_events: usize,
     skipped_cold_start: usize,
     skipped_nothing_new: usize,
+    /// Kept to rebuild the Markov model with another order (R2).
+    train_sessions: Vec<Session>,
+    markov_order: usize,
+    /// Training plays per track, for novelty and coverage (R4).
+    popularity: HashMap<u32, usize>,
+    artists: Option<HashMap<u32, u32>>,
+    /// Users without training history; only the rules (cold start) can serve them (E5).
+    cold_cases: Vec<Case>,
+    /// The training part, to build the catalog of the rules from.
+    train_data: Vec<ListenEvent>,
+    catalog: Option<Catalog>,
+    countries: HashMap<u32, String>,
+    rules: RecommenderConfig,
 }
 
 impl Evaluator {
@@ -121,6 +155,10 @@ impl Evaluator {
         let train_sessions = sessionize_all(parts.train.clone(), eval.session_gap);
         let ranker = build_ranker_from_data(&parts.train, &train_sessions, engine);
         let histories = histories(&parts.train);
+        let mut popularity: HashMap<u32, usize> = HashMap::new();
+        for event in &parts.train {
+            *popularity.entry(event.track_index).or_default() += 1;
+        }
 
         let mut evaluator = Evaluator {
             k: eval.k,
@@ -130,11 +168,25 @@ impl Evaluator {
             test_events: parts.test.len(),
             skipped_cold_start: 0,
             skipped_nothing_new: 0,
+            train_sessions,
+            markov_order: engine.markov_order,
+            popularity,
+            artists: None,
+            cold_cases: Vec::new(),
+            train_data: parts.train,
+            catalog: None,
+            countries: HashMap::new(),
+            rules: engine.recommender.clone(),
         };
 
         for (user, test_tracks) in tracks_by_user(&parts.test) {
             let Some(history) = histories.get(&user) else {
                 evaluator.skipped_cold_start += 1;
+                evaluator.cold_cases.push(Case {
+                    user,
+                    history: Vec::new(),
+                    relevant: test_tracks,
+                });
                 continue;
             };
 
@@ -146,6 +198,7 @@ impl Evaluator {
             }
 
             evaluator.cases.push(Case {
+                user,
                 history: history.clone(),
                 relevant,
             });
@@ -160,6 +213,47 @@ impl Evaluator {
         self.ranker
             .set_weight(Source::CoListening, weights.co_listening);
         self.ranker.set_weight(Source::Cf, weights.cf);
+        self.ranker.set_weight(Source::Mf, weights.mf);
+    }
+
+    /// With the tracks and users the report also has the list diversity, and
+    /// [`Evaluator::run_rules`] knows artists and countries (E5).
+    #[must_use]
+    pub fn with_catalog(mut self, tracks: &[Track], users: &[User]) -> Self {
+        self.artists = Some(
+            tracks
+                .iter()
+                .map(|track| (track.track_index, track.artist_index))
+                .collect(),
+        );
+        self.catalog = Some(Catalog::build(
+            tracks,
+            users,
+            &self.train_data,
+            self.rules.cold_start_pool,
+        ));
+        self.countries = users
+            .iter()
+            .filter_map(|user| Some((user.user_index, user.country.clone()?)))
+            .collect();
+        self
+    }
+
+    /// Order of the Markov model in use (1 or 2).
+    pub fn markov_order(&self) -> usize {
+        self.markov_order
+    }
+
+    /// Retrains only the Markov model with another order, on the same
+    /// training sessions (R2). Cheap compared to building the evaluator.
+    pub fn set_markov_order(&mut self, order: usize) {
+        if order == self.markov_order {
+            return;
+        }
+        let model = MarkovModel::train_with_order(&self.train_sessions, order);
+        self.ranker
+            .replace_generator(Box::new(MarkovGenerator::new(model)));
+        self.markov_order = model_order(order);
     }
 
     /// Number of users that can be evaluated.
@@ -175,40 +269,66 @@ impl Evaluator {
     /// Tuning uses it to pick weights on one half of the users and to
     /// check them on the other half.
     pub fn run_where(&self, keep: impl Fn(usize) -> bool) -> EvalReport {
+        let cases = self
+            .cases
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| keep(*position))
+            .map(|(_, case)| case);
+        self.judge(cases, self.skipped_cold_start, |case| {
+            let context = RecommendationContext {
+                history: case.history.clone(),
+            };
+            self.ranker
+                .recommend(&context, self.k)
+                .into_iter()
+                .map(|r| r.track_index)
+                .collect()
+        })
+    }
+
+    /// Averages the metrics of `rank` over `cases`.
+    fn judge<'a>(
+        &self,
+        cases: impl Iterator<Item = &'a Case>,
+        skipped_cold_start: usize,
+        rank: impl Fn(&Case) -> Vec<u32>,
+    ) -> EvalReport {
         let mut report = EvalReport {
             k: self.k,
             train_events: self.train_events,
             test_events: self.test_events,
             users_evaluated: 0,
-            skipped_cold_start: self.skipped_cold_start,
+            skipped_cold_start,
             skipped_nothing_new: self.skipped_nothing_new,
             hit_rate: 0.0,
             precision: 0.0,
             recall: 0.0,
             ndcg: 0.0,
+            coverage: 0.0,
+            novelty: 0.0,
+            diversity: None,
         };
+        let mut beyond = BeyondAccuracy::default();
 
-        for (position, case) in self.cases.iter().enumerate() {
-            if !keep(position) {
-                continue;
-            }
-
-            let context = RecommendationContext {
-                history: case.history.clone(),
-            };
-            let recommended: Vec<u32> = self
-                .ranker
-                .recommend(&context, self.k)
-                .into_iter()
-                .map(|r| r.track_index)
-                .collect();
+        for case in cases {
+            let recommended = rank(case);
 
             report.users_evaluated += 1;
             report.hit_rate += hit_at_k(&recommended, &case.relevant, self.k);
             report.precision += precision_at_k(&recommended, &case.relevant, self.k);
             report.recall += recall_at_k(&recommended, &case.relevant, self.k);
             report.ndcg += ndcg_at_k(&recommended, &case.relevant, self.k);
+            beyond.add(
+                &recommended,
+                &self.popularity,
+                self.train_events,
+                self.artists.as_ref(),
+            );
         }
+        report.coverage = beyond.coverage(self.popularity.len());
+        report.novelty = beyond.novelty();
+        report.diversity = beyond.diversity();
 
         if report.users_evaluated > 0 {
             let users = report.users_evaluated as f64;
@@ -232,6 +352,11 @@ pub fn evaluate(
     engine: &EngineConfig,
 ) -> Result<EvalReport, EvalError> {
     Ok(Evaluator::new(events, eval, engine)?.run())
+}
+
+/// Orders above 2 are trained as 2, see [`MarkovModel::train_with_order`].
+fn model_order(order: usize) -> usize {
+    order.clamp(1, 2)
 }
 
 /// user -> tracks they listened to, oldest first.
@@ -308,6 +433,67 @@ mod tests {
     }
 
     #[test]
+    fn beyond_accuracy_metrics_are_filled_in() {
+        let tracks: Vec<crate::domain::Track> = (1..=3)
+            .map(|index| crate::domain::test_utils::named_track(index, index, "t", "a"))
+            .collect();
+        let evaluator =
+            Evaluator::new(&pattern_events(), &global(3, 2.0 / 18.0), &lenient_engine())
+                .unwrap()
+                .with_catalog(&tracks, &[]);
+        let report = evaluator.run();
+
+        // only track 3 is new to both users, and it is one of three known tracks
+        assert!((report.coverage - 1.0 / 3.0).abs() < 1e-9);
+        assert!(report.novelty > 0.0);
+        assert_eq!(report.diversity, Some(1.0));
+    }
+
+    #[test]
+    fn the_markov_order_can_change_without_rebuilding() {
+        let mut evaluator =
+            Evaluator::new(&pattern_events(), &global(3, 2.0 / 18.0), &lenient_engine()).unwrap();
+        assert_eq!(evaluator.markov_order(), 1);
+        evaluator.set_weights(Weights {
+            markov: 1.0,
+            ..Weights::ZERO
+        });
+        let first = evaluator.run();
+
+        evaluator.set_markov_order(2);
+        assert_eq!(evaluator.markov_order(), 2);
+        // (1, 2) -> 3 was seen four times, so order 2 predicts it as well
+        let second = evaluator.run();
+        assert!((second.hit_rate - first.hit_rate).abs() < 1e-9);
+        evaluator.set_markov_order(5);
+        assert_eq!(evaluator.markov_order(), 2);
+    }
+
+    #[test]
+    fn every_model_gets_a_row_and_the_hybrid_comes_back() {
+        let mut evaluator =
+            Evaluator::new(&pattern_events(), &global(3, 2.0 / 18.0), &lenient_engine()).unwrap();
+        let hybrid = lenient_engine().weights;
+        let rows = compare::compare_models(&mut evaluator, hybrid);
+        let names: Vec<&str> = rows.iter().map(|row| row.model).collect();
+        assert_eq!(
+            names,
+            [
+                "trends",
+                "markov",
+                "markov_2",
+                "co_listening",
+                "cf",
+                "mf",
+                "hybrid",
+                "hybrid_rules"
+            ]
+        );
+        assert_eq!(evaluator.markov_order(), 1);
+        assert_eq!(evaluator.run(), rows[6].report);
+    }
+
+    #[test]
     fn model_that_learned_the_pattern_scores_high() {
         let report =
             evaluate(&pattern_events(), &global(3, 2.0 / 18.0), &lenient_engine()).unwrap();
@@ -346,11 +532,17 @@ mod tests {
     #[test]
     fn model_weights_change_the_result() {
         let eval = global(3, 2.0 / 18.0);
-        let markov_only = lenient_engine().with_weights(Weights {
-            markov: 1.0,
-            ..Weights::ZERO
-        });
-        let nothing = lenient_engine().with_weights(Weights::ZERO);
+        let markov_only = EngineConfig {
+            weights: Weights {
+                markov: 1.0,
+                ..Weights::ZERO
+            },
+            ..lenient_engine()
+        };
+        let nothing = EngineConfig {
+            weights: Weights::ZERO,
+            ..lenient_engine()
+        };
 
         let with_model = evaluate(&pattern_events(), &eval, &markov_only).unwrap();
         let without = evaluate(&pattern_events(), &eval, &nothing).unwrap();

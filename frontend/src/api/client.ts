@@ -1,14 +1,8 @@
 import type {
-  Artist,
-  ArtistProfile,
-  EventCreated,
-  Health,
-  HistoryResponse,
+  Comparison,
+  Evaluation,
   ModelStatus,
-  NewEvent,
-  NewUser,
   Overview,
-  RadioResponse,
   Recommendation,
   RecommendationsResponse,
   Track,
@@ -18,73 +12,48 @@ import type {
 } from "./types";
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:3000";
-
-export class ApiError extends Error {
-  status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-  }
-}
+/** Sent with writes when the server is started with an API key (`--api-key`). */
+const API_KEY: string | undefined = import.meta.env.VITE_API_KEY;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${BASE_URL}${path}`, init);
   } catch {
-    throw new ApiError(0, "Cannot reach the server. Is it running?");
+    throw new Error("Cannot reach the server. Is it running?");
   }
-
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new ApiError(response.status, body?.error ?? `Request failed with status ${response.status}`);
+    throw new Error(body?.error ?? `Request failed with status ${response.status}`);
   }
   return (await response.json()) as T;
 }
 
-function postJson<T>(path: string, body: unknown): Promise<T> {
+function post<T>(path: string, body?: unknown): Promise<T> {
   return request<T>(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", ...(API_KEY ? { "x-api-key": API_KEY } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
 
-/** Query string of a recommendations request. Missing weights keep the server defaults. */
-export function recommendationsQuery(user: number, top: number, weights?: Partial<Weights>): string {
-  const params = new URLSearchParams({ user: String(user), top: String(top) });
-  for (const [key, value] of Object.entries(weights ?? {})) {
-    if (value !== undefined) params.set(key, String(value));
-  }
-  return params.toString();
-}
-
 export const api = {
-  health: () => request<Health>("/health"),
-  users: (limit = 50, offset = 0) =>
-    request<UsersResponse>(`/users?limit=${limit}&offset=${offset}`),
+  users: (limit = 50) => request<UsersResponse>(`/users?limit=${limit}`),
   user: (userIndex: number) => request<UserProfile>(`/users/${userIndex}`),
-  createUser: (user: NewUser) => postJson<UserProfile>("/users", user),
-  recommendations: (user: number, top = 10, weights?: Partial<Weights>) =>
-    request<RecommendationsResponse>(`/recommendations?${recommendationsQuery(user, top, weights)}`),
-  searchTracks: (text: string, limit = 20) =>
-    request<Track[]>(`/tracks?q=${encodeURIComponent(text)}&limit=${limit}`),
-  addEvent: (event: NewEvent) => postJson<EventCreated>("/events", event),
+  createUser: (country?: string) => post<UserProfile>("/users", { country }),
+  recommendations: (user: number) => request<RecommendationsResponse>(`/recommendations?user=${user}`),
+  compare: (user: number, weights: Weights) => {
+    const params = new URLSearchParams({ user: String(user) });
+    for (const [key, value] of Object.entries(weights)) params.set(key, String(value));
+    return request<Comparison>(`/recommendations/compare?${params}`);
+  },
   track: (trackIndex: number) => request<Track>(`/tracks/${trackIndex}`),
-  similar: (trackIndex: number, top = 10) =>
-    request<Recommendation[]>(`/tracks/${trackIndex}/similar?top=${top}`),
-  overview: (days: number, top = 10) =>
-    request<Overview>(`/stats/overview?days=${days}&top=${top}`),
-  searchArtists: (text: string, limit = 20) =>
-    request<Artist[]>(`/artists?q=${encodeURIComponent(text)}&limit=${limit}`),
-  artist: (artistIndex: number, top = 20) =>
-    request<ArtistProfile>(`/artists/${artistIndex}?top=${top}`),
-  history: (user: number, limit: number, offset: number) =>
-    request<HistoryResponse>(`/users/${user}/history?limit=${limit}&offset=${offset}`),
-  radio: (user: number, length: number) =>
-    request<RadioResponse>(`/users/${user}/radio?length=${length}`),
+  similar: (trackIndex: number) => request<Recommendation[]>(`/tracks/${trackIndex}/similar?top=10`),
+  searchTracks: (text: string) => request<Track[]>(`/tracks?q=${encodeURIComponent(text)}&limit=10`),
+  addEvent: (user: number, track: number) => post<unknown>("/events", { user, track }),
   model: () => request<ModelStatus>("/model"),
-  retrain: () => request<ModelStatus>("/model/retrain", { method: "POST" }),
+  retrain: () => post<ModelStatus>("/model/retrain"),
+  evaluation: () => request<Evaluation>("/model/evaluation"),
+  evaluate: () => post<Evaluation>("/model/evaluate"),
+  overview: (days: number) => request<Overview>(`/stats/overview?days=${days}&top=8`),
 };

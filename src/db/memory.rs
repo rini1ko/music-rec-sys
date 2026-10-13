@@ -76,12 +76,30 @@ impl Repository for MemoryRepository {
         Ok(())
     }
 
+    fn replace_sessions(&mut self, sessions: Vec<Session>) -> Result<(), DbError> {
+        let kept = std::mem::take(&mut self.sessions);
+        // all or nothing: the old sessions come back when a new one is invalid
+        if let Err(error) = self.add_sessions(sessions) {
+            self.sessions = kept;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn all_events(&self) -> Result<Vec<ListenEvent>, DbError> {
         Ok(self.events_by_user.values().flatten().cloned().collect())
     }
 
     fn all_sessions(&self) -> Result<Vec<Session>, DbError> {
         Ok(self.sessions.clone())
+    }
+
+    fn all_tracks(&self) -> Result<Vec<Track>, DbError> {
+        Ok(self.tracks.values().cloned().collect())
+    }
+
+    fn all_users(&self) -> Result<Vec<User>, DbError> {
+        Ok(self.users.values().cloned().collect())
     }
 
     fn user_history(&self, user_index: u32) -> Result<Vec<u32>, DbError> {

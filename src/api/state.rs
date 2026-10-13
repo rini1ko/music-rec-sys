@@ -1,17 +1,27 @@
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use tokio::sync::broadcast;
+use tokio::task::JoinError;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::api::dto::WeightsDto;
+use crate::api::dto::{EventDto, WeightsDto};
+use crate::api::evaluation::EvaluationStatus;
+use crate::api::guard::RateLimiter;
+use crate::api::metrics::Metrics;
+use crate::api::rec_cache::RecommendationCache;
+use crate::api::stream;
+use crate::config::ServerSettings;
 use crate::db::error::DbError;
 use crate::db::store::Store;
 use crate::engine::{EngineConfig, Weights, assemble};
 use crate::etl::sessionizer::sessionize_all;
 use crate::models::adapters::TrendsGenerator;
 use crate::models::catalog::Catalog;
+use crate::models::online::OnlineCounts;
 use crate::recommender::Recommender;
 
 const LOCK: &str = "a lock in the app state is never poisoned";
@@ -19,6 +29,8 @@ const LOCK: &str = "a lock in the app state is never poisoned";
 /// Freshly trained models and what they were trained on.
 pub struct Trained {
     pub recommender: Recommender,
+    /// Plays recorded after this training, read by its Markov and trends models.
+    pub online: Arc<OnlineCounts>,
     pub events: usize,
     pub sessions: usize,
     pub seconds: f32,
@@ -56,18 +68,76 @@ pub struct AppState {
     pub store: Store,
     pub recommender: Arc<RwLock<Recommender>>,
     status: Arc<Mutex<ModelStatus>>,
+    pub(crate) evaluation: Arc<Mutex<EvaluationStatus>>,
     config: EngineConfig,
+    pub(crate) settings: Arc<ServerSettings>,
+    pub(crate) metrics: Arc<Metrics>,
+    pub(crate) limiter: Arc<RateLimiter>,
+    pub(crate) cache: Arc<RecommendationCache>,
+    online: Arc<Mutex<OnlineSlots>>,
+    /// Every stored play, for `GET /events/stream` (R5).
+    pub(crate) plays: broadcast::Sender<EventDto>,
+}
+
+/// Online counts (R1) of the models in use and, while a training runs, of the
+/// models being trained, so plays posted meanwhile reach both.
+#[derive(Debug, Default)]
+struct OnlineSlots {
+    current: Arc<OnlineCounts>,
+    next: Option<Arc<OnlineCounts>>,
 }
 
 impl AppState {
+    /// A state with [`ServerSettings::default`]; see [`AppState::with_settings`].
     pub fn new(store: Store, trained: Trained, config: EngineConfig) -> Self {
         let status = ModelStatus::new(&trained, config.weights);
+        let settings = ServerSettings::default();
         Self {
             store,
             recommender: Arc::new(RwLock::new(trained.recommender)),
+            online: Arc::new(Mutex::new(OnlineSlots {
+                current: trained.online,
+                next: None,
+            })),
             status: Arc::new(Mutex::new(status)),
+            evaluation: Arc::new(Mutex::new(EvaluationStatus::default())),
             config,
+            limiter: Arc::new(RateLimiter::new(
+                settings.rate_per_second,
+                settings.rate_burst,
+            )),
+            cache: Arc::new(RecommendationCache::new(settings.cache_capacity)),
+            metrics: Arc::new(Metrics::default()),
+            plays: stream::channel(),
+            settings: Arc::new(settings),
         }
+    }
+
+    /// The same state with other limits, key and cache size.
+    #[must_use]
+    pub fn with_settings(mut self, settings: ServerSettings) -> Self {
+        self.limiter = Arc::new(RateLimiter::new(
+            settings.rate_per_second,
+            settings.rate_burst,
+        ));
+        self.cache = Arc::new(RecommendationCache::new(settings.cache_capacity));
+        self.settings = Arc::new(settings);
+        self
+    }
+
+    /// The configuration the models are trained with.
+    pub fn config(&self) -> &EngineConfig {
+        &self.config
+    }
+
+    /// Runs `work` with the trained recommender on a blocking thread: ranking
+    /// is CPU work, and the read guard never lives across an `.await`.
+    pub async fn rank<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&Recommender) -> T + Send + 'static,
+    ) -> Result<T, JoinError> {
+        let recommender = Arc::clone(&self.recommender);
+        tokio::task::spawn_blocking(move || work(&recommender.read().expect(LOCK))).await
     }
 
     pub fn status(&self) -> ModelStatus {
@@ -93,9 +163,31 @@ impl AppState {
         true
     }
 
+    /// Counts a new play for the online parts of the models (R1). `previous`
+    /// holds the tracks played before it in the same session, oldest first.
+    pub fn record_play(&self, previous: &[u32], track: u32) {
+        let (current, next) = {
+            let slots = self.online.lock().expect(LOCK);
+            (Arc::clone(&slots.current), slots.next.clone())
+        };
+        current.record(previous, track);
+        if let Some(next) = next {
+            next.record(previous, track);
+        }
+    }
+
+    /// Plays counted online since the models in use were trained.
+    pub fn online_events(&self) -> usize {
+        self.online.lock().expect(LOCK).current.events()
+    }
+
     /// Requests keep using the old models until the new ones are ready.
     async fn run_training(&self) {
-        match train(&self.store, self.config.clone()).await {
+        // set up before the events are read, so no play falls between the
+        // snapshot and the swap (a few may be counted twice, none is lost)
+        let next = Arc::new(OnlineCounts::default());
+        self.online.lock().expect(LOCK).next = Some(Arc::clone(&next));
+        match train_counting(&self.store, self.config.clone(), next).await {
             Ok(trained) => {
                 let status = ModelStatus::new(&trained, self.config.weights);
                 tracing::info!(
@@ -110,10 +202,18 @@ impl AppState {
                     trained.recommender,
                 );
                 drop(old);
+                let mut slots = self.online.lock().expect(LOCK);
+                if let Some(next) = slots.next.take() {
+                    slots.current = next;
+                }
+                drop(slots);
+                // lists ranked by the old models must not outlive them
+                self.cache.clear();
                 *self.status.lock().expect(LOCK) = status;
             }
             Err(error) => {
                 tracing::error!(%error, "retraining failed, keeping the old models");
+                self.online.lock().expect(LOCK).next = None;
                 let mut status = self.status.lock().expect(LOCK);
                 status.training = false;
                 status.last_error = Some(error.to_string());
@@ -126,6 +226,15 @@ impl AppState {
 /// again, so events added after the import are part of them. Training is CPU
 /// work, so it runs on a blocking thread and does not stall the async ones.
 pub async fn train(store: &Store, config: EngineConfig) -> Result<Trained, DbError> {
+    train_counting(store, config, Arc::default()).await
+}
+
+/// Like [`train`], with the online counts the new models should read.
+pub async fn train_counting(
+    store: &Store,
+    config: EngineConfig,
+    online: Arc<OnlineCounts>,
+) -> Result<Trained, DbError> {
     let started = Instant::now();
     let events = store.all_events().await?;
     let tracks = store.all_tracks().await?;
@@ -137,11 +246,18 @@ pub async fn train(store: &Store, config: EngineConfig) -> Result<Trained, DbErr
     tokio::task::spawn_blocking(move || {
         let sessions = sessionize_all(events.clone(), config.session_gap);
         let trends = TrendsGenerator::from_ranked(trending);
-        let ranker = assemble(trends, &events, &sessions, &config);
+        let ranker = assemble(
+            trends,
+            &events,
+            &sessions,
+            &config,
+            Some(Arc::clone(&online)),
+        );
         let catalog = Catalog::build(&tracks, &users, &events, config.recommender.cold_start_pool);
 
         Trained {
             recommender: Recommender::new(ranker, catalog, config.recommender.clone()),
+            online,
             events: events.len(),
             sessions: sessions.len(),
             seconds: started.elapsed().as_secs_f32(),

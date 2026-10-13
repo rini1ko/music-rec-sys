@@ -2,13 +2,11 @@ import { useState } from "react";
 import { NoListener } from "../components/NoListener";
 import { PlayerPanel } from "../components/PlayerPanel";
 import { RecommendationList } from "../components/RecommendationList";
-import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useListenerEvents } from "../hooks/useListenerEvents";
 import { useUserParam } from "../hooks/useUserParam";
 
 export function PlayerPage() {
   const userId = useUserParam();
-  useDocumentTitle(typeof userId === "number" ? `Player for user ${userId}` : "Player");
 
   if (typeof userId !== "number") {
     return <NoListener invalid={userId === null} purpose="play tracks for them" />;

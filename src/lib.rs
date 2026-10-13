@@ -1,9 +1,14 @@
 pub mod api;
+pub mod bench;
+pub mod cache;
+pub mod config;
 pub mod db;
 pub mod domain;
 pub mod engine;
 pub mod etl;
 pub mod evaluation;
+pub mod export;
 pub mod models;
 pub mod ranker;
 pub mod recommender;
+pub mod rng;

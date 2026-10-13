@@ -146,10 +146,14 @@ pub(crate) async fn overview(
         artists: count(totals.artists),
         top_tracks: top_tracks.into_iter().map(Into::into).collect(),
         top_artists: top_artists.into_iter().map(Into::into).collect(),
-        by_day: days_rows
-            .into_iter()
-            .map(day_plays)
-            .collect::<Result<_, _>>()?,
+        by_day: every_day(
+            days_rows
+                .into_iter()
+                .map(day_plays)
+                .collect::<Result<_, _>>()?,
+            start.date(),
+            latest.date(),
+        ),
         by_hour: spread(hours),
         by_weekday: spread(weekdays),
         countries: countries
@@ -177,6 +181,23 @@ fn empty_overview() -> StatsOverview {
         by_weekday: [0; 7],
         countries: Vec::new(),
     }
+}
+
+/// One entry per day from `first` to `last`, with 0 for the days SQLite had
+/// no row for: a quiet day must show as a gap, not vanish from the chart.
+fn every_day(counted: Vec<DayPlays>, first: NaiveDate, last: NaiveDate) -> Vec<DayPlays> {
+    let plays: std::collections::HashMap<NaiveDate, usize> = counted
+        .into_iter()
+        .map(|item| (item.day, item.plays))
+        .collect();
+    first
+        .iter_days()
+        .take_while(|day| *day <= last)
+        .map(|day| DayPlays {
+            day,
+            plays: plays.get(&day).copied().unwrap_or(0),
+        })
+        .collect()
 }
 
 fn day_plays(row: DayRow) -> Result<DayPlays, DbError> {
@@ -272,10 +293,12 @@ mod tests {
             .iter()
             .map(|item| (item.day.to_string(), item.plays))
             .collect();
-        assert_eq!(
-            days,
-            vec![("2009-05-04".to_string(), 1), ("2009-05-07".to_string(), 3)]
-        );
+        // every day of the window is there, quiet ones with 0
+        assert_eq!(days.len(), 8);
+        assert_eq!(days[0], ("2009-04-30".to_string(), 0));
+        assert_eq!(days[4], ("2009-05-04".to_string(), 1));
+        assert_eq!(days[5], ("2009-05-05".to_string(), 0));
+        assert_eq!(days[7], ("2009-05-07".to_string(), 3));
         // the events are at 12:00, 12:00, 13:00 and 13:01
         assert_eq!(overview.by_hour[12], 2);
         assert_eq!(overview.by_hour[13], 2);

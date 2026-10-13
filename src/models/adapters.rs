@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::Duration;
 
@@ -7,11 +8,14 @@ use crate::models::candidate::{Candidate, CandidateGenerator, RecommendationCont
 use crate::models::cf::CfModel;
 use crate::models::co_listening::CoListeningGraph;
 use crate::models::markov::MarkovModel;
+use crate::models::mf::MfModel;
+use crate::models::online::OnlineCounts;
 use crate::models::trends::trending;
 
 /// Popular tracks. Ignores the user, so it also covers users without history.
 pub struct TrendsGenerator {
     ranked: Vec<(u32, usize)>,
+    online: Option<Arc<OnlineCounts>>,
 }
 
 impl TrendsGenerator {
@@ -21,7 +25,29 @@ impl TrendsGenerator {
 
     /// For a ranking that was already counted elsewhere, e.g. by the database.
     pub fn from_ranked(ranked: Vec<(u32, usize)>) -> Self {
-        TrendsGenerator { ranked }
+        TrendsGenerator {
+            ranked,
+            online: None,
+        }
+    }
+
+    /// Plays recorded after the training count too (R1).
+    #[must_use]
+    pub fn with_online(mut self, online: Arc<OnlineCounts>) -> Self {
+        self.online = Some(online);
+        self
+    }
+
+    /// The trained ranking plus the plays since the training, most played first.
+    fn current(&self) -> Vec<(u32, usize)> {
+        let Some(online) = self.online.as_ref().filter(|online| online.events() > 0) else {
+            return self.ranked.clone();
+        };
+        let mut plays: HashMap<u32, usize> = self.ranked.iter().copied().collect();
+        online.add_plays(&mut plays);
+        let mut ranked: Vec<(u32, usize)> = plays.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        ranked
     }
 }
 
@@ -31,25 +57,40 @@ impl CandidateGenerator for TrendsGenerator {
     }
 
     fn candidates(&self, _context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
-        self.ranked
-            .iter()
+        self.current()
+            .into_iter()
             .take(limit)
-            .map(|&(track_index, plays)| Candidate {
+            .map(|(track_index, plays)| Candidate {
                 track_index,
                 score: plays as f64,
             })
             .collect()
     }
+
+    fn size(&self) -> usize {
+        self.ranked.len()
+    }
 }
 
-/// What usually follows the last track the user listened to.
+/// What usually follows the last track (or the last two) the user listened to.
 pub struct MarkovGenerator {
     model: MarkovModel,
+    online: Option<Arc<OnlineCounts>>,
 }
 
 impl MarkovGenerator {
     pub fn new(model: MarkovModel) -> Self {
-        MarkovGenerator { model }
+        MarkovGenerator {
+            model,
+            online: None,
+        }
+    }
+
+    /// Transitions recorded after the training count too (R1).
+    #[must_use]
+    pub fn with_online(mut self, online: Arc<OnlineCounts>) -> Self {
+        self.online = Some(online);
+        self
     }
 }
 
@@ -59,18 +100,18 @@ impl CandidateGenerator for MarkovGenerator {
     }
 
     fn candidates(&self, context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
-        let Some(&last_track) = context.history.last() else {
-            return Vec::new();
-        };
-
         self.model
-            .predict(last_track, limit)
+            .predict_after(&context.history, limit, self.online.as_deref())
             .into_iter()
             .map(|(track_index, probability)| Candidate {
                 track_index,
                 score: probability,
             })
             .collect()
+    }
+
+    fn size(&self) -> usize {
+        self.model.transition_count()
     }
 }
 
@@ -118,6 +159,39 @@ impl CandidateGenerator for CoListeningGenerator {
         candidates.truncate(limit);
         candidates
     }
+
+    fn size(&self) -> usize {
+        self.graph.edge_count()
+    }
+}
+
+/// Tracks whose hidden factors match the factors of the user's history (R8).
+pub struct MfGenerator {
+    model: MfModel,
+}
+
+impl MfGenerator {
+    pub fn new(model: MfModel) -> Self {
+        MfGenerator { model }
+    }
+}
+
+impl CandidateGenerator for MfGenerator {
+    fn source(&self) -> Source {
+        Source::Mf
+    }
+
+    fn candidates(&self, context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
+        self.model
+            .recommend(&context.history, limit)
+            .into_iter()
+            .map(|(track_index, score)| Candidate { track_index, score })
+            .collect()
+    }
+
+    fn size(&self) -> usize {
+        self.model.item_count()
+    }
 }
 
 /// Tracks that users with a similar listening history liked.
@@ -142,6 +216,10 @@ impl CandidateGenerator for CfGenerator {
             .into_iter()
             .map(|(track_index, score)| Candidate { track_index, score })
             .collect()
+    }
+
+    fn size(&self) -> usize {
+        self.model.user_count()
     }
 }
 

@@ -1,162 +1,97 @@
 import { useState } from "react";
 import { useElementWidth } from "../../hooks/useElementWidth";
-import { indexOfMax, moveCursor, ticksFor } from "../../lib/chart";
-import { compact, whole } from "../../lib/format";
-import { ChartTooltip } from "./ChartTooltip";
+import { moveCursor, niceCeil } from "../../lib/chart";
+import { compact } from "../../lib/format";
 
 export interface ChartPoint {
   /** Short label under the column. */
   label: string;
+  /** Longer label for the tooltip. */
+  detail: string;
   value: number;
-  /** Longer label for the tooltip, the label is used when missing. */
-  detail?: string;
 }
 
 interface Props {
   points: ChartPoint[];
   /** What the chart shows, read by screen readers. */
   label: string;
-  /** Unit of the values, e.g. "plays". */
   unit: string;
-  /** Show every n-th label under the columns, so they do not overlap. */
-  labelEvery?: number;
-  height?: number;
+  /** At most this many labels under the columns, so they do not overlap. */
+  maxLabels?: number;
 }
 
-const MARGIN = { top: 20, right: 8, bottom: 24, left: 40 };
-const MAX_BAR = 24;
-const GAP = 2;
-const RADIUS = 4;
+const HEIGHT = 180;
+const MARGIN = { top: 12, right: 8, bottom: 24, left: 40 };
+const AXIS_TEXT = { fontSize: 11, fill: "var(--fg-subtle)" };
 
-/** A column rounded at the data end and square at the baseline. */
+/** A column rounded at the data end (4px) and square at the baseline. */
 function columnPath(x: number, top: number, width: number, baseline: number): string {
-  const radius = Math.min(RADIUS, width / 2, baseline - top);
-  return [
-    `M${x},${baseline}`,
-    `V${top + radius}`,
-    `Q${x},${top} ${x + radius},${top}`,
-    `H${x + width - radius}`,
-    `Q${x + width},${top} ${x + width},${top + radius}`,
-    `V${baseline}`,
-    "Z",
-  ].join(" ");
+  const r = Math.min(4, width / 2, baseline - top);
+  return `M${x},${baseline} V${top + r} Q${x},${top} ${x + r},${top} H${x + width - r} Q${x + width},${top} ${x + width},${top + r} V${baseline} Z`;
 }
 
-/** Columns for a handful of ordered buckets: hours, weekdays. */
-export function ColumnChart({ points, label, unit, labelEvery = 1, height = 180 }: Props) {
+/**
+ * One series of ordered buckets (days, hours). Hovering a column shows its
+ * value; with focus, the arrow keys read the columns out one by one.
+ */
+export function ColumnChart({ points, label, unit, maxLabels = 12 }: Props) {
   const { ref, width } = useElementWidth<HTMLDivElement>(600);
   const [active, setActive] = useState<number | null>(null);
 
-  const values = points.map((point) => point.value);
-  const ticks = ticksFor(Math.max(0, ...values));
-  const scaleTop = ticks[ticks.length - 1];
-  const innerWidth = Math.max(1, width - MARGIN.left - MARGIN.right);
-  const innerHeight = height - MARGIN.top - MARGIN.bottom;
+  const top = niceCeil(Math.max(0, ...points.map((point) => point.value)));
+  const innerHeight = HEIGHT - MARGIN.top - MARGIN.bottom;
   const baseline = MARGIN.top + innerHeight;
-  const band = innerWidth / Math.max(1, points.length);
-  const barWidth = Math.max(2, Math.min(MAX_BAR, band - GAP));
-  const y = (value: number) => baseline - (value / scaleTop) * innerHeight;
-  const center = (index: number) => MARGIN.left + band * index + band / 2;
-  const peak = indexOfMax(values);
+  const band = Math.max(1, width - MARGIN.left - MARGIN.right) / Math.max(1, points.length);
+  // columns are at most 24px thick, the rest of the band is a gap
+  const barWidth = Math.max(2, Math.min(24, band - 2));
+  const y = (value: number) => baseline - (value / top) * innerHeight;
+  const labelEvery = Math.max(1, Math.ceil(points.length / maxLabels));
   const focused = active === null ? null : points[active];
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref}>
       <svg
         width={width}
-        height={height}
+        height={HEIGHT}
         role="img"
         aria-label={`${label}. Use the arrow keys to read the values.`}
         tabIndex={0}
         onKeyDown={(event) => moveCursor(event, active, points.length, setActive)}
         onBlur={() => setActive(null)}
-        onPointerLeave={() => setActive(null)}
         className="block rounded-md focus-visible:outline-2 focus-visible:outline-accent"
       >
-        {ticks.map((tick) => (
+        {[0, top / 2, top].map((tick) => (
           <g key={tick}>
-            <line
-              x1={MARGIN.left}
-              x2={width - MARGIN.right}
-              y1={y(tick)}
-              y2={y(tick)}
-              stroke="var(--chart-grid)"
-              strokeWidth={1}
-            />
-            <text
-              x={MARGIN.left - 6}
-              y={y(tick)}
-              dy="0.32em"
-              textAnchor="end"
-              fontSize={11}
-              fill="var(--fg-subtle)"
-              className="tabular-nums"
-            >
+            <line x1={MARGIN.left} x2={width - MARGIN.right} y1={y(tick)} y2={y(tick)} stroke="var(--line)" />
+            <text x={MARGIN.left - 6} y={y(tick)} dy="0.32em" textAnchor="end" {...AXIS_TEXT}>
               {compact(tick)}
             </text>
           </g>
         ))}
-
-        {points.map((point, index) => {
-          const x = center(index) - barWidth / 2;
-          return (
-            <g key={point.label}>
-              {point.value > 0 && (
-                <path
-                  d={columnPath(x, y(point.value), barWidth, baseline)}
-                  fill="var(--chart-1)"
-                  opacity={active === null || active === index ? 1 : 0.45}
-                />
-              )}
-              {index % labelEvery === 0 && (
-                <text
-                  x={center(index)}
-                  y={baseline + 16}
-                  textAnchor="middle"
-                  fontSize={11}
-                  fill="var(--fg-subtle)"
-                >
-                  {point.label}
-                </text>
-              )}
-              {/* the whole band is the hover target, not only the painted column */}
-              <rect
-                x={MARGIN.left + band * index}
-                y={MARGIN.top}
-                width={band}
-                height={innerHeight}
-                fill="transparent"
-                onPointerEnter={() => setActive(index)}
+        {points.map((point, index) => (
+          <g key={point.detail}>
+            {/* the whole band is the hover target, its title is the tooltip */}
+            <rect x={MARGIN.left + band * index} y={MARGIN.top} width={band} height={innerHeight} fill="transparent">
+              <title>{`${point.detail}: ${point.value.toLocaleString("en")} ${unit}`}</title>
+            </rect>
+            {point.value > 0 && (
+              <path
+                d={columnPath(MARGIN.left + band * index + (band - barWidth) / 2, y(point.value), barWidth, baseline)}
+                fill="var(--chart-1)"
+                opacity={active === null || active === index ? 1 : 0.45}
+                pointerEvents="none"
               />
-            </g>
-          );
-        })}
-
-        {peak >= 0 && values[peak] > 0 && active === null && (
-          <text
-            x={center(peak)}
-            y={y(values[peak]) - 6}
-            textAnchor="middle"
-            fontSize={11}
-            fill="var(--fg-muted)"
-            className="tabular-nums"
-          >
-            {compact(values[peak])}
-          </text>
-        )}
+            )}
+            {index % labelEvery === 0 && (
+              <text x={MARGIN.left + band * index + band / 2} y={baseline + 16} textAnchor="middle" {...AXIS_TEXT}>
+                {point.label}
+              </text>
+            )}
+          </g>
+        ))}
       </svg>
-
-      {focused !== null && active !== null && (
-        <ChartTooltip
-          x={center(active)}
-          y={y(focused.value)}
-          width={width}
-          value={`${whole(focused.value)} ${unit}`}
-          label={focused.detail ?? focused.label}
-        />
-      )}
       <p className="sr-only" aria-live="polite">
-        {focused === null ? "" : `${focused.detail ?? focused.label}: ${whole(focused.value)} ${unit}`}
+        {focused ? `${focused.detail}: ${focused.value} ${unit}` : ""}
       </p>
     </div>
   );

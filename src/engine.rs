@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use chrono::Duration;
 
@@ -6,20 +7,25 @@ use crate::db::error::DbError;
 use crate::db::repository::Repository;
 use crate::domain::{ListenEvent, Session};
 use crate::models::adapters::{
-    CfGenerator, CoListeningGenerator, MarkovGenerator, TrendsGenerator,
+    CfGenerator, CoListeningGenerator, MarkovGenerator, MfGenerator, TrendsGenerator,
 };
 use crate::models::cf::{CfConfig, CfModel};
 use crate::models::co_listening::{CoListeningConfig, CoListeningGraph};
 use crate::models::markov::MarkovModel;
+use crate::models::mf::{MfConfig, MfModel};
+use crate::models::online::OnlineCounts;
 use crate::ranker::{Ranker, RankerConfig};
 use crate::recommender::RecommenderConfig;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Weights {
     pub trends: f64,
     pub markov: f64,
     pub co_listening: f64,
     pub cf: f64,
+    /// Matrix factorization (R8). 0 by default: the hybrid stays as tuned, a
+    /// request or the config can switch it on.
+    pub mf: f64,
 }
 
 impl Weights {
@@ -29,6 +35,7 @@ impl Weights {
         markov: 0.0,
         co_listening: 0.0,
         cf: 0.0,
+        mf: 0.0,
     };
 }
 
@@ -36,8 +43,8 @@ impl fmt::Display for Weights {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "trends {:.1} / markov {:.1} / co-listening {:.1} / cf {:.1}",
-            self.trends, self.markov, self.co_listening, self.cf
+            "trends {:.1} / markov {:.1} / co-listening {:.1} / cf {:.1} / mf {:.1}",
+            self.trends, self.markov, self.co_listening, self.cf, self.mf
         )
     }
 }
@@ -53,6 +60,10 @@ pub struct EngineConfig {
     pub candidates_per_source: usize,
     pub weights: Weights,
     pub recommender: RecommenderConfig,
+    /// 1: the next track depends on the last one; 2: on the last two, with a
+    /// fall back to one when the pair is rare (R2).
+    pub markov_order: usize,
+    pub mf: MfConfig,
 }
 
 impl Default for EngineConfig {
@@ -70,19 +81,16 @@ impl Default for EngineConfig {
                 markov: 0.2,
                 co_listening: 0.4,
                 cf: 0.3,
+                mf: 0.0,
             },
             recommender: RecommenderConfig::default(),
+            markov_order: 1,
+            mf: MfConfig::default(),
         }
     }
 }
 
 impl EngineConfig {
-    /// Same config with different model weights (used to compare models).
-    pub fn with_weights(mut self, weights: Weights) -> Self {
-        self.weights = weights;
-        self
-    }
-
     /// Small datasets do not have enough overlap for the default thresholds.
     pub fn lenient() -> Self {
         EngineConfig {
@@ -94,6 +102,10 @@ impl EngineConfig {
             cf: CfConfig {
                 min_overlap: 1,
                 ..CfConfig::default()
+            },
+            mf: MfConfig {
+                min_item_plays: 1,
+                ..MfConfig::default()
             },
             ..EngineConfig::default()
         }
@@ -114,6 +126,7 @@ pub fn build_ranker(
         &events,
         &sessions,
         config,
+        None,
     ))
 }
 
@@ -125,19 +138,29 @@ pub fn build_ranker_from_data(
     config: &EngineConfig,
 ) -> Ranker {
     let trends = TrendsGenerator::new(events, config.trend_window, config.trend_pool);
-    assemble(trends, events, sessions, config)
+    assemble(trends, events, sessions, config, None)
 }
 
+/// Trains the models and wires them into a ranker. With `online` the Markov
+/// and trends models also count the plays recorded after this training (R1).
 pub fn assemble(
     trends: TrendsGenerator,
     events: &[ListenEvent],
     sessions: &[Session],
     config: &EngineConfig,
+    online: Option<Arc<OnlineCounts>>,
 ) -> Ranker {
-    let markov = MarkovGenerator::new(MarkovModel::train(sessions));
+    let mut markov =
+        MarkovGenerator::new(MarkovModel::train_with_order(sessions, config.markov_order));
+    let mut trends = trends;
+    if let Some(online) = online {
+        markov = markov.with_online(Arc::clone(&online));
+        trends = trends.with_online(online);
+    }
     let graph = CoListeningGraph::build(sessions, &config.co_listening);
     let co_listening = CoListeningGenerator::new(graph, config.co_listening_recent_tracks);
     let cf = CfGenerator::new(CfModel::train(events, &config.cf));
+    let mf = MfGenerator::new(MfModel::train(events, &config.mf));
 
     Ranker::new(RankerConfig {
         candidates_per_source: config.candidates_per_source,
@@ -146,6 +169,7 @@ pub fn assemble(
     .with_generator(Box::new(markov), config.weights.markov)
     .with_generator(Box::new(co_listening), config.weights.co_listening)
     .with_generator(Box::new(cf), config.weights.cf)
+    .with_generator(Box::new(mf), config.weights.mf)
 }
 
 #[cfg(test)]

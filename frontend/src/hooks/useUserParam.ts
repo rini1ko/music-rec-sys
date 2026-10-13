@@ -1,5 +1,5 @@
 import { useParams } from "react-router";
-import { parseUserIndex } from "../lib/paths";
+import { parseIndex } from "../lib/paths";
 
 /**
  * The listener from the `:userId` part of the URL.
@@ -7,5 +7,5 @@ import { parseUserIndex } from "../lib/paths";
  */
 export function useUserParam(): number | null | undefined {
   const { userId } = useParams();
-  return parseUserIndex(userId);
+  return parseIndex(userId);
 }

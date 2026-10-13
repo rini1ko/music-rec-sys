@@ -1,160 +1,101 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api/client";
-import type { NewUser, UserProfile } from "../api/types";
+import type { UserProfile } from "../api/types";
 import { messageOf, useAsync } from "../hooks/useAsync";
+import { buttonClasses, inputClasses, labelClasses } from "../lib/styles";
 import { ErrorBox } from "./Feedback";
-import { Button } from "./ui/Button";
-import { Dialog } from "./ui/Dialog";
-import { Field } from "./ui/Field";
-import { inputClasses } from "./ui/styles";
-
-const MIN_AGE = 1;
-const MAX_AGE = 120;
-/** The countries in the hint list come from this many most active listeners. */
-const COUNTRY_SAMPLE = 200;
 
 interface Props {
-  open: boolean;
   onClose: () => void;
   onCreated: (user: UserProfile) => void;
 }
 
-export function NewListenerDialog({ open, onClose, onCreated }: Props) {
-  return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      title="New listener"
-      description="A listener without plays gets a cold start: tracks popular in their country, or among all listeners."
-    >
-      <NewListenerForm onCancel={onClose} onCreated={onCreated} />
-    </Dialog>
-  );
-}
-
-function parseAge(text: string): { age?: number; error: string | null } {
-  if (text.trim() === "") return { error: null };
-  const age = Number(text);
-  if (!Number.isInteger(age) || age < MIN_AGE || age > MAX_AGE) {
-    return { error: `Age must be a whole number from ${MIN_AGE} to ${MAX_AGE}.` };
-  }
-  return { age, error: null };
-}
-
-function NewListenerForm({
-  onCancel,
-  onCreated,
-}: {
-  onCancel: () => void;
-  onCreated: (user: UserProfile) => void;
-}) {
+/**
+ * Creates a listener without plays (C4). A native modal <dialog>: the browser
+ * keeps focus inside and reports Escape. Render it only while it is open, so
+ * the form starts empty every time.
+ */
+export function NewListenerDialog({ onClose, onCreated }: Props) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const countryRef = useRef<HTMLInputElement>(null);
   const [country, setCountry] = useState("");
-  const [age, setAge] = useState("");
-  const [gender, setGender] = useState("");
-  const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // cold start matches the country by exact name, so suggest the names from the data
+  const countries = useAsync(async () => {
+    const names = (await api.users(200)).items.map((user) => user.country);
+    return [...new Set(names.filter((name): name is string => name !== null))].sort();
+  }, "countries");
 
-  const countries = useAsync(
-    async () => {
-      const users = await api.users(COUNTRY_SAMPLE);
-      const names = users.items.map((user) => user.country).filter((name): name is string => name !== null);
-      return [...new Set(names)].sort((left, right) => left.localeCompare(right));
-    },
-    "countries",
-  );
-
-  const parsedAge = parseAge(age);
-  const ageError = touched ? parsedAge.error : null;
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setTouched(true);
-    if (parsedAge.error !== null) return;
-
-    const body: NewUser = {
-      country: country.trim() || undefined,
-      age: parsedAge.age,
-      gender: gender || undefined,
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog?.showModal();
+    countryRef.current?.focus();
+    return () => {
+      dialog?.close();
+      // React removes the dialog before this runs, so the browser cannot give focus back itself
+      opener?.focus();
     };
+  }, []);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
     setSaving(true);
-    setSaveError(null);
+    setError(null);
     try {
-      onCreated(await api.createUser(body));
-    } catch (error) {
-      setSaveError(messageOf(error));
+      onCreated(await api.createUser(country.trim() || undefined));
+    } catch (failure) {
+      setError(messageOf(failure));
       setSaving(false);
     }
   }
 
   return (
-    <form onSubmit={submit} noValidate className="space-y-4">
-      <Field
-        htmlFor="new-listener-country"
-        label="Country"
-        hint="Optional. Pick one from the data to get local tracks in the cold start."
-      >
-        <input
-          id="new-listener-country"
-          list="new-listener-countries"
-          value={country}
-          onChange={(event) => setCountry(event.target.value)}
-          placeholder="For example, Germany"
-          maxLength={56}
-          autoComplete="off"
-          data-autofocus
-          aria-describedby="new-listener-country-hint"
-          className={inputClasses}
-        />
-        <datalist id="new-listener-countries">
-          {(countries.data ?? []).map((name) => (
-            <option key={name} value={name} />
-          ))}
-        </datalist>
-      </Field>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field htmlFor="new-listener-age" label="Age" hint="Optional." error={ageError}>
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="new-listener-title"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      className="m-auto w-[calc(100%-2rem)] max-w-md rounded-xl border border-line bg-surface p-6 text-fg"
+    >
+      <h2 id="new-listener-title" className="text-lg font-semibold">
+        New listener
+      </h2>
+      <p className="mt-1 text-sm text-fg-muted">
+        Without plays they get a cold start: tracks popular in their country, or among all listeners.
+      </p>
+      <form onSubmit={submit} className="mt-5 space-y-4">
+        <label className="block space-y-1.5">
+          <span className={labelClasses}>Country (optional)</span>
           <input
-            id="new-listener-age"
-            type="number"
-            inputMode="numeric"
-            min={MIN_AGE}
-            max={MAX_AGE}
-            value={age}
-            onChange={(event) => setAge(event.target.value)}
-            onBlur={() => setTouched(true)}
-            aria-invalid={ageError !== null}
-            aria-describedby={ageError !== null ? "new-listener-age-error" : "new-listener-age-hint"}
+            ref={countryRef}
+            list="new-listener-countries"
+            value={country}
+            onChange={(event) => setCountry(event.target.value)}
+            maxLength={56}
+            autoComplete="off"
+            placeholder="For example, Germany"
             className={inputClasses}
           />
-        </Field>
-
-        <Field htmlFor="new-listener-gender" label="Gender" hint="Optional.">
-          <select
-            id="new-listener-gender"
-            value={gender}
-            onChange={(event) => setGender(event.target.value)}
-            aria-describedby="new-listener-gender-hint"
-            className={inputClasses}
-          >
-            <option value="">Not set</option>
-            <option value="male">Male</option>
-            <option value="female">Female</option>
-          </select>
-        </Field>
-      </div>
-
-      {saveError && <ErrorBox message={saveError} />}
-
-      <div className="flex justify-end gap-2 pt-2">
-        <Button variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" variant="primary" busy={saving}>
-          Create listener
-        </Button>
-      </div>
-    </form>
+          <datalist id="new-listener-countries">
+            {(countries.data ?? []).map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        </label>
+        {error && <ErrorBox message={error} />}
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className={buttonClasses.secondary}>
+            Cancel
+          </button>
+          <button type="submit" disabled={saving} className={buttonClasses.primary}>
+            {saving ? "Creating..." : "Create listener"}
+          </button>
+        </div>
+      </form>
+    </dialog>
   );
 }

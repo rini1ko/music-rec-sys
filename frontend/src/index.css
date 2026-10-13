@@ -1,68 +1,37 @@
 @import "tailwindcss";
 
-/*
- * Design tokens. Components use only these names (bg-surface, text-fg-muted, ...),
- * so a light theme (C8) only has to redefine the variables below.
- */
+/* Colors as variables, so the SVG charts can use them as well as the classes. */
 :root {
   color-scheme: dark;
-
   --canvas: #020617;
   --surface: #0f172a;
-  --surface-raised: #1e293b;
   --line: #1e293b;
-  --line-strong: #334155;
-
   --fg: #f1f5f9;
-  --fg-muted: #94a3b8;
   --fg-subtle: #64748b;
-
-  --accent: #10b981;
-  --accent-hover: #34d399;
-  --accent-fg: #022c22;
-  --accent-text: #6ee7b7;
-
-  --danger: #f43f5e;
-  --danger-text: #fda4af;
-  --danger-surface: #4c0519;
-  --danger-line: #881337;
-
-  --warning-text: #fcd34d;
-  --warning-surface: #451a03;
-  --warning-line: #92400e;
-
-  /* single-series chart marks; checked with the dataviz validator against --surface */
+  /* single-series chart marks, checked with the dataviz validator against --surface */
   --chart-1: #3987e5;
-  --chart-grid: #1e293b;
 }
 
 @theme inline {
   --color-canvas: var(--canvas);
   --color-surface: var(--surface);
-  --color-surface-raised: var(--surface-raised);
+  --color-surface-raised: #1e293b;
   --color-line: var(--line);
-  --color-line-strong: var(--line-strong);
-
+  --color-line-strong: #334155;
   --color-fg: var(--fg);
-  --color-fg-muted: var(--fg-muted);
+  --color-fg-muted: #94a3b8;
   --color-fg-subtle: var(--fg-subtle);
-
-  --color-accent: var(--accent);
-  --color-accent-hover: var(--accent-hover);
-  --color-accent-fg: var(--accent-fg);
-  --color-accent-text: var(--accent-text);
-
-  --color-danger: var(--danger);
-  --color-danger-text: var(--danger-text);
-  --color-danger-surface: var(--danger-surface);
-  --color-danger-line: var(--danger-line);
-
-  --color-warning-text: var(--warning-text);
-  --color-warning-surface: var(--warning-surface);
-  --color-warning-line: var(--warning-line);
-
+  --color-accent: #10b981;
+  --color-accent-hover: #34d399;
+  --color-accent-fg: #022c22;
+  --color-accent-text: #6ee7b7;
+  --color-danger-text: #fda4af;
+  --color-danger-surface: #4c0519;
+  --color-danger-line: #881337;
+  --color-warning-text: #fcd34d;
+  --color-warning-surface: #451a03;
+  --color-warning-line: #92400e;
   --color-chart-1: var(--chart-1);
-  --color-chart-grid: var(--chart-grid);
 }
 
 body {

@@ -7,10 +7,10 @@ use crate::db::error::DbError;
 use crate::db::repository::Counts;
 use crate::db::schema::{connect, create_schema};
 use crate::db::sea_repository as queries;
-use crate::db::{artists, listening, stats};
+use crate::db::{artists, feedback, listening, stats};
 use crate::domain::{
-    ArtistProfile, ArtistSummary, HistoryPage, ListenEvent, Session, StatsOverview, Track, User,
-    UsersPage,
+    ArtistProfile, ArtistSummary, Feedback, FeedbackEntry, HistoryPage, ListenEvent, Session,
+    SourceFeedback, StatsOverview, Track, User, UsersPage,
 };
 
 /// The same database as `SeaOrmRepository`, but async, for the web server.
@@ -67,6 +67,15 @@ impl Store {
     /// Several tracks in one query, by index. Unknown indexes are left out.
     pub async fn tracks(&self, wanted: &[u32]) -> Result<HashMap<u32, Track>, DbError> {
         queries::find_tracks(&self.db, wanted).await
+    }
+
+    /// The user's last `limit` plays, newest first. Unknown users have none.
+    pub async fn recent_events(
+        &self,
+        user_index: u32,
+        limit: usize,
+    ) -> Result<Vec<ListenEvent>, DbError> {
+        queries::recent_events(&self.db, user_index, limit).await
     }
 
     pub async fn history(&self, user_index: u32) -> Result<Vec<u32>, DbError> {
@@ -141,6 +150,25 @@ impl Store {
         offset: usize,
     ) -> Result<HistoryPage, DbError> {
         listening::history_page(&self.db, user_index, limit, offset).await
+    }
+
+    /// Stores a like or a skip; unknown users and tracks are errors.
+    pub async fn add_feedback(&self, item: Feedback) -> Result<(), DbError> {
+        feedback::insert_feedback(&self.db, item).await
+    }
+
+    /// The user's latest feedback, newest first.
+    pub async fn feedback(
+        &self,
+        user_index: u32,
+        limit: usize,
+    ) -> Result<Vec<FeedbackEntry>, DbError> {
+        feedback::feedback_page(&self.db, user_index, limit).await
+    }
+
+    /// Likes and skips per model, for the bandit.
+    pub async fn feedback_stats(&self, user_index: u32) -> Result<Vec<SourceFeedback>, DbError> {
+        feedback::feedback_stats(&self.db, user_index).await
     }
 }
 

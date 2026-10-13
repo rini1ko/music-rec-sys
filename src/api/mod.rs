@@ -1,15 +1,25 @@
+pub mod compare;
 pub mod docs;
 pub mod dto;
 pub mod error;
+pub mod evaluation;
+pub mod extract;
+pub mod feedback;
+pub mod guard;
 pub mod handlers;
 pub mod insights;
+pub mod metrics;
+pub mod rec_cache;
 pub mod state;
+pub mod stream;
 #[cfg(test)]
 mod test_support;
 
 use axum::Router;
-use axum::http::header::{CONTENT_TYPE, InvalidHeaderValue};
+use axum::extract::DefaultBodyLimit;
+use axum::http::header::{CONTENT_TYPE, HeaderName, InvalidHeaderValue};
 use axum::http::{HeaderValue, Method};
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{get, post};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -18,18 +28,34 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api::state::AppState;
 
+/// Every endpoint with its middleware. From the outside in: request id,
+/// tracing, rate limit, body size limit, time limit, metrics (after routing,
+/// so it sees the route template), and the API key on writes and service calls.
 pub fn router(state: AppState) -> Router {
+    let key = || from_fn_with_state(state.clone(), guard::require_api_key);
+    let body_limit = state.settings.body_limit;
+
     Router::new()
         .route("/health", get(handlers::health))
+        .route("/metrics", get(metrics::metrics))
         .route("/recommendations", get(handlers::recommendations))
-        .route("/events", post(handlers::add_event))
+        .route("/recommendations/compare", get(compare::compare))
+        .route("/events", post(handlers::add_event).route_layer(key()))
+        .route("/events/stream", get(stream::event_stream))
         .route("/users/{user_index}", get(handlers::user))
         .route("/model", get(handlers::model_status))
-        .route("/model/retrain", post(handlers::retrain))
+        .route("/model/retrain", post(handlers::retrain).route_layer(key()))
+        .route(
+            "/model/evaluate",
+            post(evaluation::start_evaluation).route_layer(key()),
+        )
+        .route("/model/evaluation", get(evaluation::evaluation))
+        .route("/feedback", post(feedback::add_feedback).route_layer(key()))
+        .route("/users/{user_index}/feedback", get(feedback::user_feedback))
         .route("/tracks", get(handlers::search_tracks))
         .route(
             "/users",
-            get(handlers::list_users).post(handlers::create_user),
+            get(handlers::list_users).merge(post(handlers::create_user).route_layer(key())),
         )
         .route(
             "/tracks/{track_index}/similar",
@@ -42,7 +68,14 @@ pub fn router(state: AppState) -> Router {
         .route("/users/{user_index}/history", get(insights::user_history))
         .route("/users/{user_index}/radio", get(insights::radio))
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", docs::ApiDoc::openapi()))
+        .fallback(extract::not_found)
+        .method_not_allowed_fallback(extract::method_not_allowed)
+        .route_layer(from_fn_with_state(state.clone(), metrics::track_requests))
+        .layer(from_fn_with_state(state.clone(), guard::time_limit))
+        .layer(DefaultBodyLimit::max(body_limit))
+        .layer(from_fn_with_state(state.clone(), guard::rate_limit))
         .layer(TraceLayer::new_for_http())
+        .layer(from_fn(guard::request_id))
         .with_state(state)
 }
 
@@ -53,10 +86,16 @@ pub fn cors(origins: &[String]) -> Result<CorsLayer, InvalidHeaderValue> {
         .map(|origin| HeaderValue::from_str(origin))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let request_id = HeaderName::from_static(guard::REQUEST_ID);
     Ok(CorsLayer::new()
         .allow_origin(origins)
         .allow_methods([Method::GET, Method::POST])
-        .allow_headers([CONTENT_TYPE]))
+        .allow_headers([
+            CONTENT_TYPE,
+            HeaderName::from_static(guard::API_KEY),
+            request_id.clone(),
+        ])
+        .expose_headers([request_id]))
 }
 
 #[cfg(test)]
@@ -229,6 +268,13 @@ mod tests {
             "/tracks",
             "/tracks/{track_index}/similar",
             "/tracks/{track_index}",
+            "/model/evaluate",
+            "/model/evaluation",
+            "/feedback",
+            "/users/{user_index}/feedback",
+            "/events/stream",
+            "/recommendations/compare",
+            "/metrics",
             "/stats/overview",
             "/artists",
             "/artists/{artist_index}",

@@ -27,9 +27,18 @@ pub trait Repository {
     /// Every session must reference a stored user and stored tracks.
     fn add_sessions(&mut self, sessions: Vec<Session>) -> Result<(), DbError>;
 
+    /// Drops every stored session and stores these instead, atomically.
+    fn replace_sessions(&mut self, sessions: Vec<Session>) -> Result<(), DbError>;
+
     fn all_events(&self) -> Result<Vec<ListenEvent>, DbError>;
 
     fn all_sessions(&self) -> Result<Vec<Session>, DbError>;
+
+    /// Every stored track, ordered by index.
+    fn all_tracks(&self) -> Result<Vec<Track>, DbError>;
+
+    /// Every stored user, ordered by index.
+    fn all_users(&self) -> Result<Vec<User>, DbError>;
 
     /// Tracks the user listened to, oldest first. A known user without
     /// events gets an empty list, an unknown user gets `UserNotFound`.

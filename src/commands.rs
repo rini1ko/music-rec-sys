@@ -2,16 +2,19 @@ use anyhow::{Context, Result, bail};
 use chrono::Duration;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs::File;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Instant;
 
 use music_recommendation_system::api::{self, state::AppState};
+use music_recommendation_system::config::file::{FileConfig, ServeConfig, ServerSection};
 use music_recommendation_system::db::memory::MemoryRepository;
 use music_recommendation_system::db::repository::Repository;
 use music_recommendation_system::db::sea_repository::SeaOrmRepository;
 use music_recommendation_system::db::store::Store;
-use music_recommendation_system::engine::{EngineConfig, Weights, build_ranker};
+use music_recommendation_system::engine::{EngineConfig, build_ranker};
 use music_recommendation_system::etl::loader::{LoadReport, load_from_path, load_from_reader};
+use music_recommendation_system::evaluation::compare::compare_models;
 use music_recommendation_system::evaluation::split::SplitMode;
 use music_recommendation_system::evaluation::tuning::tune;
 use music_recommendation_system::evaluation::{EvalConfig, Evaluator};
@@ -21,6 +24,7 @@ use crate::cli::{
     Command, DEFAULT_DATA, DataArgs, EtlArgs, EvalArgs, RecommendArgs, ServeArgs, TuneArgs,
 };
 use crate::logging;
+use crate::tools;
 
 pub fn run(command: Option<Command>) -> Result<()> {
     match command {
@@ -31,6 +35,11 @@ pub fn run(command: Option<Command>) -> Result<()> {
         Some(Command::Tune(args)) => tune_weights(&args),
         Some(Command::Etl(args)) => etl(&args),
         Some(Command::Serve(args)) => serve(&args),
+        Some(Command::Simulate(args)) => tools::simulate_load(&args),
+        Some(Command::Bench(args)) => tools::bench(&args),
+        Some(Command::Migrate(args)) => tools::migrate(&args),
+        Some(Command::Export(args)) => tools::export(&args),
+        Some(Command::ResetDb(args)) => tools::reset(&args),
     }
 }
 
@@ -44,7 +53,7 @@ fn print_report(report: &LoadReport) {
     }
 }
 
-fn load_csv(path: &str) -> Result<MemoryRepository> {
+pub(crate) fn load_csv(path: &str) -> Result<MemoryRepository> {
     let mut repo = MemoryRepository::default();
     let report = load_from_path(path, &mut repo, Duration::minutes(30))
         .with_context(|| format!("failed to load {path}"))?;
@@ -53,7 +62,7 @@ fn load_csv(path: &str) -> Result<MemoryRepository> {
 }
 
 /// The database if `--db` is given, otherwise the CSV loaded into memory.
-fn open(args: &DataArgs) -> Result<Box<dyn Repository>> {
+pub(crate) fn open(args: &DataArgs) -> Result<Box<dyn Repository>> {
     let Some(db) = &args.db else {
         return Ok(Box::new(load_csv(&args.path)?));
     };
@@ -67,7 +76,7 @@ fn open(args: &DataArgs) -> Result<Box<dyn Repository>> {
 }
 
 /// Relative paths only: a Windows `C:\...` path does not fit a sqlite URL.
-fn sqlite_url(path: &str) -> String {
+pub(crate) fn sqlite_url(path: &str) -> String {
     format!("sqlite://{path}?mode=rwc")
 }
 
@@ -82,13 +91,16 @@ fn progress_bar(total_bytes: u64) -> ProgressBar {
 }
 
 fn etl(args: &EtlArgs) -> Result<()> {
+    if args.append {
+        return tools::etl_append(args);
+    }
     let mut repo = SeaOrmRepository::open(&sqlite_url(&args.db))
         .with_context(|| format!("failed to open {}", args.db))?;
 
     // loading twice would duplicate every event and session
     if repo.counts()?.events > 0 {
         bail!(
-            "{} already contains data, delete it or pick another --db",
+            "{} already contains data, use --append, reset-db or another --db",
             args.db
         );
     }
@@ -114,25 +126,46 @@ fn etl(args: &EtlArgs) -> Result<()> {
 }
 
 fn serve(args: &ServeArgs) -> Result<()> {
-    if !Path::new(&args.db).exists() {
-        bail!("database {} not found, run `etl` first", args.db);
-    }
-    let _log_guard = logging::init(&args.log_dir);
+    let file =
+        FileConfig::locate(args.config.as_deref()).context("failed to load the config file")?;
+    let config = file
+        .engine
+        .engine_config(args.lenient)
+        .context("invalid [engine] settings")?;
+    let cli = ServerSection {
+        db: args.db.clone(),
+        addr: args.addr.clone(),
+        log_dir: args.log_dir.clone(),
+        retrain_minutes: args.retrain_minutes,
+        cors_origins: (!args.cors_origins.is_empty()).then(|| args.cors_origins.clone()),
+        api_key: args.api_key.clone(),
+        rate_per_second: args.rate_per_second,
+        rate_burst: args.rate_burst,
+        request_timeout_secs: args.request_timeout_secs,
+        body_limit_bytes: args.body_limit_bytes,
+        cache_capacity: args.cache_capacity,
+    };
+    let serve = cli
+        .or(file.server)
+        .finish()
+        .context("invalid server settings")?;
 
-    tokio::runtime::Runtime::new()?.block_on(run_server(args))
+    if !Path::new(&serve.db).exists() {
+        bail!("database {} not found, run `etl` first", serve.db);
+    }
+    let _log_guard = logging::init(&serve.log_dir);
+    tokio::runtime::Runtime::new()?.block_on(run_server(serve, config))
 }
 
-async fn run_server(args: &ServeArgs) -> Result<()> {
+async fn run_server(args: ServeConfig, config: EngineConfig) -> Result<()> {
     let store = Store::open(&sqlite_url(&args.db))
         .await
         .with_context(|| format!("failed to open {}", args.db))?;
 
-    let config = if args.lenient {
-        EngineConfig::lenient()
-    } else {
-        EngineConfig::default()
-    };
-    tracing::info!("training the models");
+    if args.settings.api_key.is_none() {
+        tracing::warn!("no API key is set, writes and /model/* are open to anyone");
+    }
+    tracing::info!(settings = ?args.settings, "training the models");
     let trained = api::state::train(&store, config.clone())
         .await
         .context("failed to train the models")?;
@@ -143,7 +176,7 @@ async fn run_server(args: &ServeArgs) -> Result<()> {
         "models are ready"
     );
 
-    let state = AppState::new(store, trained, config);
+    let state = AppState::new(store, trained, config).with_settings(args.settings.clone());
     if args.retrain_minutes > 0 {
         let every = std::time::Duration::from_secs(args.retrain_minutes * 60);
         api::state::spawn_schedule(state.clone(), every);
@@ -158,9 +191,13 @@ async fn run_server(args: &ServeArgs) -> Result<()> {
         .with_context(|| format!("cannot listen on {}", args.addr))?;
     tracing::info!(addr = %args.addr, db = %args.db, "server started");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // the client address is what the rate limit counts by
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     tracing::info!("server stopped");
     Ok(())
 }
@@ -257,7 +294,8 @@ fn prepare(args: &EvalArgs) -> Result<Evaluator> {
         split,
         ..EvalConfig::default()
     };
-    let evaluator = Evaluator::new(&events, &config, &EngineConfig::default())?;
+    let evaluator = Evaluator::new(&events, &config, &EngineConfig::default())?
+        .with_catalog(&repo.all_tracks()?, &repo.all_users()?);
 
     let summary = evaluator.run();
     println!(
@@ -276,42 +314,12 @@ fn prepare(args: &EvalArgs) -> Result<Evaluator> {
 /// Compares every model alone and the hybrid.
 fn eval(args: &EvalArgs) -> Result<()> {
     let mut evaluator = prepare(args)?;
-
-    let presets = [
-        (
-            "trends only",
-            Weights {
-                trends: 1.0,
-                ..Weights::ZERO
-            },
-        ),
-        (
-            "markov only",
-            Weights {
-                markov: 1.0,
-                ..Weights::ZERO
-            },
-        ),
-        (
-            "co-listening only",
-            Weights {
-                co_listening: 1.0,
-                ..Weights::ZERO
-            },
-        ),
-        (
-            "cf only",
-            Weights {
-                cf: 1.0,
-                ..Weights::ZERO
-            },
-        ),
-        ("hybrid (default)", EngineConfig::default().weights),
-    ];
-
-    for (name, weights) in presets {
-        evaluator.set_weights(weights);
-        println!("{name:<18} {}", evaluator.run());
+    for score in compare_models(&mut evaluator, EngineConfig::default().weights) {
+        println!("{:<14} {}", score.model, score.report);
+    }
+    let cold = evaluator.cold_case_count();
+    if cold > 0 {
+        println!("hybrid_rules also judges {cold} users without training plays (cold start)");
     }
     Ok(())
 }
@@ -418,11 +426,18 @@ mod tests {
             path: DEFAULT_DATA.to_string(),
             db: path.clone(),
             gap: 30,
+            append: false,
         };
 
         etl(&args).unwrap();
         let error = etl(&args).unwrap_err();
         assert!(error.to_string().contains("already contains data"));
+        // with --append the same file adds nothing and does not fail
+        etl(&EtlArgs {
+            append: true,
+            ..args
+        })
+        .unwrap();
 
         let _ = std::fs::remove_file(&path);
     }
@@ -434,6 +449,7 @@ mod tests {
             path: DEFAULT_DATA.to_string(),
             db: path.clone(),
             gap: 30,
+            append: false,
         })
         .unwrap();
 
@@ -466,12 +482,8 @@ mod tests {
     #[test]
     fn serve_needs_an_existing_database() {
         let error = serve(&ServeArgs {
-            db: "target/no-such.db".to_string(),
-            addr: "127.0.0.1:0".to_string(),
-            log_dir: "target/logs".to_string(),
-            lenient: false,
-            retrain_minutes: 0,
-            cors_origins: Vec::new(),
+            db: Some("target/no-such.db".to_string()),
+            ..ServeArgs::default()
         })
         .unwrap_err();
         assert!(error.to_string().contains("run `etl` first"));

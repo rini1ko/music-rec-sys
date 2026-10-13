@@ -26,6 +26,16 @@ pub enum Command {
     Etl(EtlArgs),
     /// Start the HTTP API
     Serve(ServeArgs),
+    /// Create listeners and plays through the database layer and time every call
+    Simulate(SimulateArgs),
+    /// Time the training of every model and the ranking
+    Bench(BenchArgs),
+    /// Show or apply the schema migrations
+    Migrate(MigrateArgs),
+    /// Write listeners or recommendations as CSV or JSON
+    Export(ExportArgs),
+    /// Delete every row of a database and create the schema again
+    ResetDb(ResetArgs),
 }
 
 #[derive(Debug, Args)]
@@ -52,6 +62,10 @@ pub struct EtlArgs {
     /// Minutes of silence that start a new session
     #[arg(long, default_value_t = 30, value_parser = at_least_one)]
     pub gap: usize,
+
+    /// Add to a database that has data: skip known plays, cut the sessions again
+    #[arg(long)]
+    pub append: bool,
 }
 
 #[derive(Debug, Args)]
@@ -91,7 +105,7 @@ pub struct TuneArgs {
     #[command(flatten)]
     pub eval: EvalArgs,
 
-    /// Weights are tried in steps of 1/STEPS (10 means 286 combinations)
+    /// Weights are tried in steps of 1/STEPS (10 means 1001 combinations of the five models)
     #[arg(long, default_value_t = 10, value_parser = steps_in_range)]
     pub steps: usize,
 
@@ -100,34 +114,168 @@ pub struct TuneArgs {
     pub show: usize,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
+/// Every value can also be set in `config.toml` or in a `MUSIC_*` variable.
+/// Priority: command line > environment > file > default.
 pub struct ServeArgs {
-    /// SQLite database made by `etl`
-    #[arg(long, default_value = DEFAULT_DB)]
+    /// Settings file [default: config.toml, if it exists]
+    #[arg(long, env = "MUSIC_CONFIG")]
+    pub config: Option<String>,
+
+    /// SQLite database made by `etl` [default: data/music.db]
+    #[arg(long, env = "MUSIC_DB")]
+    pub db: Option<String>,
+
+    /// Address to listen on [default: 127.0.0.1:3000]
+    #[arg(long, env = "MUSIC_ADDR")]
+    pub addr: Option<String>,
+
+    /// Directory for the JSON log files [default: logs]
+    #[arg(long, env = "MUSIC_LOG_DIR")]
+    pub log_dir: Option<String>,
+
+    /// Relaxed thresholds for tiny datasets such as sample.csv
+    #[arg(long, env = "MUSIC_LENIENT", num_args = 0..=1, default_missing_value = "true")]
+    pub lenient: Option<bool>,
+
+    /// Retrain the models every N minutes, 0 means only on request [default: 0]
+    #[arg(long, env = "MUSIC_RETRAIN_MINUTES")]
+    pub retrain_minutes: Option<u64>,
+
+    /// Browser origins allowed to call the API (repeat the flag, or separate with commas)
+    #[arg(
+        long = "cors-origin",
+        env = "MUSIC_CORS_ORIGINS",
+        value_delimiter = ','
+    )]
+    pub cors_origins: Vec<String>,
+
+    /// Key required in x-api-key for writes and /model/* actions [default: none, all open]
+    #[arg(long, env = "MUSIC_API_KEY", hide_env_values = true)]
+    pub api_key: Option<String>,
+
+    /// Average requests per second per client, 0 turns the limit off [default: 20]
+    #[arg(long, env = "MUSIC_RATE_PER_SECOND")]
+    pub rate_per_second: Option<f64>,
+
+    /// Requests one client may send at once [default: 40]
+    #[arg(long, env = "MUSIC_RATE_BURST")]
+    pub rate_burst: Option<u32>,
+
+    /// Seconds a request may take before it fails with 503 [default: 30]
+    #[arg(long, env = "MUSIC_REQUEST_TIMEOUT_SECS")]
+    pub request_timeout_secs: Option<u64>,
+
+    /// Largest request body in bytes [default: 65536]
+    #[arg(long, env = "MUSIC_BODY_LIMIT_BYTES")]
+    pub body_limit_bytes: Option<usize>,
+
+    /// Recommendation lists kept ready, 0 turns the cache off [default: 1024]
+    #[arg(long, env = "MUSIC_CACHE_CAPACITY")]
+    pub cache_capacity: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct SimulateArgs {
+    /// Database to write to; use a copy, the simulation adds listeners and plays
+    #[arg(long, default_value = "data/play.db")]
     pub db: String,
 
-    /// Address to listen on
-    #[arg(long, default_value = "127.0.0.1:3000")]
-    pub addr: String,
+    /// Listeners to create
+    #[arg(long, default_value_t = 10, value_parser = at_least_one)]
+    pub users: usize,
 
-    /// Directory for the JSON log files
-    #[arg(long, default_value = "logs")]
-    pub log_dir: String,
+    /// Plays to store, one by one
+    #[arg(long, default_value_t = 1000, value_parser = at_least_one)]
+    pub events: usize,
+
+    /// Seed of the random choices, the same seed repeats the run
+    #[arg(long, default_value_t = 42)]
+    pub seed: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct BenchArgs {
+    #[command(flatten)]
+    pub data: DataArgs,
+
+    /// Rankings to time
+    #[arg(long, default_value_t = 200, value_parser = at_least_one)]
+    pub requests: usize,
 
     /// Relaxed thresholds for tiny datasets such as sample.csv
     #[arg(long)]
     pub lenient: bool,
 
-    /// Retrain the models every N minutes, 0 means only on request
-    #[arg(long, default_value_t = 0)]
-    pub retrain_minutes: u64,
+    /// Order of the Markov model, 1 or 2
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=2))]
+    pub markov_order: u8,
+}
 
-    /// Browser origins allowed to call the API (repeat the flag for several)
-    #[arg(
-        long = "cors-origin",
-        default_values = ["http://localhost:5173", "http://127.0.0.1:5173"]
-    )]
-    pub cors_origins: Vec<String>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum MigrateAction {
+    /// List the migrations and whether they are applied
+    Status,
+    /// Apply the pending ones
+    Up,
+    /// Undo the last one (drops its tables and their data)
+    Down,
+}
+
+#[derive(Debug, Args)]
+pub struct MigrateArgs {
+    #[arg(value_enum, default_value_t = MigrateAction::Up)]
+    pub action: MigrateAction,
+
+    #[arg(long, default_value = DEFAULT_DB)]
+    pub db: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ExportKind {
+    Users,
+    Recommendations,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ExportFormat {
+    Csv,
+    Json,
+}
+
+#[derive(Debug, Args)]
+pub struct ExportArgs {
+    /// What to write
+    #[arg(value_enum)]
+    pub what: ExportKind,
+
+    #[arg(long, default_value = DEFAULT_DB)]
+    pub db: String,
+
+    #[arg(long, value_enum, default_value_t = ExportFormat::Csv)]
+    pub format: ExportFormat,
+
+    /// File to write; without it the rows go to the screen
+    #[arg(long)]
+    pub out: Option<String>,
+
+    /// Recommendations per listener
+    #[arg(long, default_value_t = 10, value_parser = at_least_one)]
+    pub top: usize,
+
+    /// Relaxed thresholds for tiny datasets such as sample.csv
+    #[arg(long)]
+    pub lenient: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResetArgs {
+    #[arg(long, default_value = DEFAULT_DB)]
+    pub db: String,
+
+    /// Confirms that every row may be deleted
+    #[arg(long)]
+    pub yes: bool,
 }
 
 fn at_least_one(value: &str) -> Result<usize, String> {
@@ -251,7 +399,22 @@ mod tests {
         let Some(Command::Serve(args)) = parse(&["serve"]).unwrap().command else {
             panic!("expected the serve command");
         };
-        assert_eq!(args.db, DEFAULT_DB);
-        assert_eq!(args.addr, "127.0.0.1:3000");
+        // nothing is decided here: the config file and the defaults fill the gaps later
+        assert_eq!(args.db, None);
+        assert_eq!(args.lenient, None);
+        assert!(args.cors_origins.is_empty());
+    }
+
+    #[test]
+    fn serve_flags_take_values() {
+        let Some(Command::Serve(args)) =
+            parse(&["serve", "--lenient", "--cors-origin", "http://a,http://b"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected the serve command");
+        };
+        assert_eq!(args.lenient, Some(true));
+        assert_eq!(args.cors_origins, ["http://a", "http://b"]);
     }
 }

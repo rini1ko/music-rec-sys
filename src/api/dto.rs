@@ -42,6 +42,7 @@ pub struct WeightsDto {
     pub markov: f64,
     pub co_listening: f64,
     pub cf: f64,
+    pub mf: f64,
 }
 
 impl From<Weights> for WeightsDto {
@@ -51,6 +52,7 @@ impl From<Weights> for WeightsDto {
             markov: weights.markov,
             co_listening: weights.co_listening,
             cf: weights.cf,
+            mf: weights.mf,
         }
     }
 }
@@ -71,12 +73,22 @@ pub struct RecommendQuery {
     pub co_listening: Option<f64>,
     /// Weight of the collaborative filtering model for this request only.
     pub cf: Option<f64>,
+    /// Weight of the matrix factorization model for this request only.
+    pub mf: Option<f64>,
+    /// Let the listener's likes and skips scale the weights (Thompson
+    /// sampling). Default is true; it has no effect without feedback.
+    #[serde(default = "default_true")]
+    pub bandit: bool,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ReasonDto {
-    /// Machine name of the source: trends, markov, co_listening, cf, artist,
-    /// country or popular.
+    /// Machine name of the source: trends, markov, co_listening, cf, mf,
+    /// artist, country or popular.
     pub source: &'static str,
     /// Human-readable explanation.
     pub text: &'static str,
@@ -84,7 +96,7 @@ pub struct ReasonDto {
     pub contribution: f64,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RecommendationDto {
     pub track_index: u32,
     pub title: Option<String>,
@@ -125,11 +137,13 @@ impl RecommendationDto {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RecommendationsResponse {
     pub user: u32,
     pub history_len: usize,
     pub items: Vec<RecommendationDto>,
+    /// Weights the bandit drew for this request; `null` when it was not used.
+    pub bandit_weights: Option<WeightsDto>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -140,7 +154,7 @@ pub struct NewEvent {
     pub timestamp: Option<NaiveDateTime>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct EventDto {
     pub user: u32,
     pub track: u32,
@@ -342,7 +356,7 @@ pub struct OverviewDto {
     pub artists: usize,
     pub top_tracks: Vec<TrackPlaysDto>,
     pub top_artists: Vec<ArtistDto>,
-    /// Days without plays are missing.
+    /// Every day of the window, days without plays have 0.
     pub by_day: Vec<DayPlaysDto>,
     /// 24 numbers, index is the hour.
     pub by_hour: Vec<usize>,

@@ -1,5 +1,4 @@
-import { describeMovement, type Movement } from "../../lib/compare";
-import { cx } from "../ui/styles";
+import type { Movement } from "../../api/types";
 
 const STYLES: Record<Movement["kind"], { icon: string; classes: string }> = {
   up: { icon: "▲", classes: "text-accent-text" },
@@ -8,19 +7,18 @@ const STYLES: Record<Movement["kind"], { icon: string; classes: string }> = {
   same: { icon: "=", classes: "text-fg-subtle" },
 };
 
-/** Shows how a track moved, with an arrow and a number, not only a color. */
+/** How a track moved: an arrow and a number, not only a color. */
 export function MovementBadge({ movement }: { movement: Movement }) {
   const style = STYLES[movement.kind];
-  const text = movement.kind === "up" || movement.kind === "down" ? String(movement.by) : movement.kind === "new" ? "new" : "";
-  const description = describeMovement(movement);
-
+  const by = "by" in movement ? movement.by : null;
+  const text = by === null ? (movement.kind === "new" ? "new in the list" : "same place") : `${movement.kind} ${by}`;
   return (
-    <span title={description} className={cx("whitespace-nowrap text-xs tabular-nums", style.classes)}>
+    <span title={text} className={`whitespace-nowrap text-xs ${style.classes}`}>
       <span aria-hidden="true">
         {style.icon}
-        {text}
+        {by}
       </span>
-      <span className="sr-only">{description}</span>
+      <span className="sr-only">{text}</span>
     </span>
   );
 }

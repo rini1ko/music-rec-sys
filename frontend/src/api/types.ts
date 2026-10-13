@@ -1,7 +1,7 @@
-export type Source = "trends" | "markov" | "co_listening" | "cf" | "artist" | "country" | "popular";
+export type Source = "trends" | "markov" | "co_listening" | "cf" | "mf" | "artist" | "country" | "popular";
 
 /** Models whose weight can be changed, a subset of `Source`. */
-export type WeightKey = "trends" | "markov" | "co_listening" | "cf";
+export type WeightKey = "trends" | "markov" | "co_listening" | "cf" | "mf";
 
 export type Weights = Record<WeightKey, number>;
 
@@ -11,12 +11,13 @@ export interface Reason {
   contribution: number;
 }
 
-export interface Recommendation {
+export interface Track {
   track_index: number;
   title: string | null;
   artist: string | null;
-  /** Null only when the track is missing from the catalog. */
-  artist_index: number | null;
+}
+
+export interface Recommendation extends Track {
   score: number;
   reasons: Reason[];
 }
@@ -27,119 +28,28 @@ export interface RecommendationsResponse {
   items: Recommendation[];
 }
 
-export interface Track {
-  track_index: number;
-  title: string | null;
-  artist: string | null;
-  artist_index: number;
-}
+export type Movement = { kind: "same" | "new" } | { kind: "up" | "down"; by: number };
 
-export interface TrackPlays extends Track {
-  plays: number;
-}
-
-export interface Artist {
-  artist_index: number;
-  name: string | null;
-  /** All tracks of the artist in a search, played ones in the statistics. */
-  tracks: number;
-  plays: number;
-  listeners: number;
-}
-
-export interface ArtistProfile extends Artist {
-  top_tracks: TrackPlays[];
-}
-
-export interface DayPlays {
-  /** `YYYY-MM-DD`. */
-  day: string;
-  plays: number;
-}
-
-export interface CountryPlays {
-  country: string | null;
-  listeners: number;
-  plays: number;
-}
-
-export interface Overview {
-  days: number;
-  from: string | null;
-  to: string | null;
-  plays: number;
-  listeners: number;
-  tracks: number;
-  artists: number;
-  top_tracks: TrackPlays[];
-  top_artists: Artist[];
-  /** Days without plays are missing. */
-  by_day: DayPlays[];
-  /** 24 numbers, index is the hour. */
-  by_hour: number[];
-  /** 7 numbers, index 0 is Sunday. */
-  by_weekday: number[];
-  countries: CountryPlays[];
-}
-
-export interface HistoryEntry extends Track {
-  timestamp: string;
-}
-
-export interface HistoryResponse {
-  user: number;
-  total: number;
-  limit: number;
-  offset: number;
-  items: HistoryEntry[];
-}
-
-export interface RadioResponse {
-  user: number;
+/** `/recommendations/compare`: the default list and the list with other weights. */
+export interface Comparison {
   history_len: number;
-  items: Recommendation[];
-}
-
-export interface UserSummary {
-  user_index: number;
-  gender: string | null;
-  age: number | null;
-  country: string | null;
-  plays: number;
+  base: Recommendation[];
+  custom: (Recommendation & { movement: Movement })[];
+  up: number;
+  down: number;
+  added: number;
+  gone: number;
 }
 
 export interface UsersResponse {
   total: number;
-  items: UserSummary[];
+  items: { user_index: number; country: string | null; plays: number }[];
 }
 
 export interface UserProfile {
   user_index: number;
-  gender: string | null;
-  age: number | null;
   country: string | null;
   history_len: number;
-  recent: Track[];
-}
-
-export interface NewEvent {
-  user: number;
-  track: number;
-  timestamp?: string;
-}
-
-export interface EventCreated {
-  user: number;
-  track: number;
-  timestamp: string;
-}
-
-export interface Health {
-  status: string;
-  users: number;
-  tracks: number;
-  events: number;
-  sessions: number;
 }
 
 export interface ModelStatus {
@@ -149,13 +59,33 @@ export interface ModelStatus {
   events: number;
   sessions: number;
   last_error: string | null;
-  /** Used when a request does not override them. */
   weights: Weights;
 }
 
-export interface NewUser {
-  country?: string;
-  /** From 1 to 120. */
-  age?: number;
-  gender?: string;
+export interface ModelScore {
+  model: WeightKey | "markov_2" | "hybrid" | "hybrid_rules";
+  ndcg: number;
+  hit_rate: number;
+  coverage: number;
+  novelty: number;
+  diversity: number | null;
+}
+
+export interface Evaluation {
+  running: boolean;
+  k: number;
+  users: number;
+  last_error: string | null;
+  models: ModelScore[];
+}
+
+export interface Overview {
+  from: string | null;
+  to: string | null;
+  plays: number;
+  top_artists: { artist_index: number; name: string | null; plays: number; listeners: number }[];
+  /** Every day of the window, quiet days with 0. */
+  by_day: { day: string; plays: number }[];
+  /** 24 numbers, index is the hour. */
+  by_hour: number[];
 }

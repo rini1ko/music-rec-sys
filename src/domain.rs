@@ -95,7 +95,7 @@ pub struct StatsOverview {
     pub artists: usize,
     pub top_tracks: Vec<TrackPlays>,
     pub top_artists: Vec<ArtistSummary>,
-    /// Days without plays are missing.
+    /// Every day of the window, days without plays have 0.
     pub by_day: Vec<DayPlays>,
     /// Index is the hour of the day, 0 to 23.
     pub by_hour: [usize; 24],
@@ -116,6 +116,55 @@ pub struct HistoryEntry {
 pub struct HistoryPage {
     pub total: usize,
     pub items: Vec<HistoryEntry>,
+}
+
+/// What a listener said about a recommended track (R3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FeedbackKind {
+    Like,
+    Skip,
+}
+
+impl FeedbackKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FeedbackKind::Like => "like",
+            FeedbackKind::Skip => "skip",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "like" => Some(FeedbackKind::Like),
+            "skip" => Some(FeedbackKind::Skip),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Feedback {
+    pub user_index: u32,
+    pub track_index: u32,
+    pub kind: FeedbackKind,
+    /// Name of the model credited with the track, `None` if no model proposed it.
+    pub source: Option<String>,
+    pub created_at: NaiveDateTime,
+}
+
+/// A feedback with the track it is about.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeedbackEntry {
+    pub feedback: Feedback,
+    pub track: Track,
+}
+
+/// Likes and skips of one listener for the tracks of one model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFeedback {
+    pub source: String,
+    pub likes: u32,
+    pub skips: u32,
 }
 
 /// Helpers shared by tests in other modules.

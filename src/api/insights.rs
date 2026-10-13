@@ -3,13 +3,14 @@
 //! (E4) lives here too: it is a playlist built for one listener.
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 
 use crate::api::dto::{
     ArtistDto, ArtistProfileDto, ArtistQuery, ArtistSearchQuery, ErrorBody, HistoryQuery,
     HistoryResponse, OverviewDto, OverviewQuery, RadioQuery, RadioResponse, TrackDto,
 };
 use crate::api::error::ApiError;
+use crate::api::extract::{ApiPath, ApiQuery};
 use crate::api::handlers::{check_range, describe};
 use crate::api::state::AppState;
 
@@ -35,7 +36,7 @@ const MAX_RADIO_LENGTH: usize = 50;
 )]
 pub async fn overview(
     State(state): State<AppState>,
-    Query(query): Query<OverviewQuery>,
+    ApiQuery(query): ApiQuery<OverviewQuery>,
 ) -> Result<Json<OverviewDto>, ApiError> {
     if !(1..=MAX_DAYS).contains(&query.days) {
         return Err(ApiError::BadRequest(format!(
@@ -61,7 +62,7 @@ pub async fn overview(
 )]
 pub async fn search_artists(
     State(state): State<AppState>,
-    Query(query): Query<ArtistSearchQuery>,
+    ApiQuery(query): ApiQuery<ArtistSearchQuery>,
 ) -> Result<Json<Vec<ArtistDto>>, ApiError> {
     let text = query.q.trim();
     if text.chars().count() < MIN_SEARCH_LEN {
@@ -92,8 +93,8 @@ pub async fn search_artists(
 )]
 pub async fn artist(
     State(state): State<AppState>,
-    Path(artist_index): Path<u32>,
-    Query(query): Query<ArtistQuery>,
+    ApiPath(artist_index): ApiPath<u32>,
+    ApiQuery(query): ApiQuery<ArtistQuery>,
 ) -> Result<Json<ArtistProfileDto>, ApiError> {
     check_range("top", query.top, MAX_ARTIST_TRACKS)?;
 
@@ -118,7 +119,7 @@ pub async fn artist(
 )]
 pub async fn track(
     State(state): State<AppState>,
-    Path(track_index): Path<u32>,
+    ApiPath(track_index): ApiPath<u32>,
 ) -> Result<Json<TrackDto>, ApiError> {
     match state.store.track(track_index).await? {
         Some(track) => Ok(Json(track.into())),
@@ -143,8 +144,8 @@ pub async fn track(
 )]
 pub async fn user_history(
     State(state): State<AppState>,
-    Path(user_index): Path<u32>,
-    Query(query): Query<HistoryQuery>,
+    ApiPath(user_index): ApiPath<u32>,
+    ApiQuery(query): ApiQuery<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, ApiError> {
     check_range("limit", query.limit, MAX_HISTORY_PAGE)?;
 
@@ -179,8 +180,8 @@ pub async fn user_history(
 )]
 pub async fn radio(
     State(state): State<AppState>,
-    Path(user_index): Path<u32>,
-    Query(query): Query<RadioQuery>,
+    ApiPath(user_index): ApiPath<u32>,
+    ApiQuery(query): ApiQuery<RadioQuery>,
 ) -> Result<Json<RadioResponse>, ApiError> {
     check_range("length", query.length, MAX_RADIO_LENGTH)?;
 
@@ -190,16 +191,11 @@ pub async fn radio(
     let history = state.store.history(user_index).await?;
     let history_len = history.len();
 
-    // one ranking per track: CPU work, keep it off the async threads
-    let recommender = state.recommender.clone();
+    // one ranking per track of the playlist
     let length = query.length;
-    let playlist = tokio::task::spawn_blocking(move || {
-        let recommender = recommender
-            .read()
-            .expect("the recommender lock is never poisoned");
-        recommender.radio(history, user.country.as_deref(), length)
-    })
-    .await?;
+    let playlist = state
+        .rank(move |recommender| recommender.radio(history, user.country.as_deref(), length))
+        .await?;
 
     Ok(Json(RadioResponse {
         user: user_index,

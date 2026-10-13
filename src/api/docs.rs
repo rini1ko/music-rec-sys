@@ -1,13 +1,18 @@
 use utoipa::OpenApi;
 
+use crate::api::compare::{ComparedItemDto, ComparisonResponse, Movement};
 use crate::api::dto::{
     ArtistDto, ArtistProfileDto, CountryPlaysDto, DayPlaysDto, ErrorBody, EventDto, HealthDto,
     HistoryEntryDto, HistoryResponse, NewEvent, NewUser, OverviewDto, RadioResponse, ReasonDto,
     RecommendationDto, RecommendationsResponse, TrackDto, TrackPlaysDto, UserDto, UserSummaryDto,
     UsersResponse, WeightsDto,
 };
+use crate::api::evaluation::{EvaluationStatus, ModelScoreDto};
+use crate::api::feedback::{
+    ArmDto, FeedbackDto, FeedbackItemDto, FeedbackKindDto, FeedbackResponse, NewFeedback,
+};
 use crate::api::state::ModelStatus;
-use crate::api::{handlers, insights};
+use crate::api::{compare, evaluation, feedback, handlers, insights, metrics, stream};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -22,6 +27,13 @@ use crate::api::{handlers, insights};
         handlers::user,
         handlers::model_status,
         handlers::retrain,
+        evaluation::start_evaluation,
+        evaluation::evaluation,
+        feedback::add_feedback,
+        feedback::user_feedback,
+        metrics::metrics,
+        stream::event_stream,
+        compare::compare,
         handlers::list_users,
         handlers::search_tracks,
         handlers::create_user,
@@ -45,6 +57,17 @@ use crate::api::{handlers, insights};
         TrackDto,
         ModelStatus,
         WeightsDto,
+        EvaluationStatus,
+        ModelScoreDto,
+        NewFeedback,
+        FeedbackKindDto,
+        FeedbackDto,
+        FeedbackItemDto,
+        FeedbackResponse,
+        ArmDto,
+        Movement,
+        ComparedItemDto,
+        ComparisonResponse,
         UsersResponse,
         UserSummaryDto,
         NewUser,

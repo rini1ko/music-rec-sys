@@ -74,6 +74,27 @@ impl Ranker {
         }
     }
 
+    /// Swaps the generator of the same source for another one, keeping its
+    /// weight. Evaluation uses it to try a Markov model of another order.
+    pub fn replace_generator(&mut self, generator: Box<dyn CandidateGenerator>) {
+        let source = generator.source();
+        if let Some(entry) = self
+            .generators
+            .iter_mut()
+            .find(|entry| entry.generator.source() == source)
+        {
+            entry.generator = generator;
+        }
+    }
+
+    /// What each model keeps, see [`CandidateGenerator::size`].
+    pub fn model_sizes(&self) -> Vec<(Source, usize)> {
+        self.generators
+            .iter()
+            .map(|entry| (entry.generator.source(), entry.generator.size()))
+            .collect()
+    }
+
     pub fn recommend(&self, context: &RecommendationContext, limit: usize) -> Vec<Recommendation> {
         self.recommend_with(context, limit, |_, weight| weight)
     }

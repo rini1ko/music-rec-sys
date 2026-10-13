@@ -2,8 +2,8 @@ use crate::engine::Weights;
 
 use super::{EvalReport, Evaluator};
 
-/// Every combination of four weights that are multiples of `1 / steps` and
-/// add up to 1. With `steps = 10` that is 286 combinations.
+/// Every combination of the five weights that are multiples of `1 / steps`
+/// and add up to 1. With `steps = 10` that is 1001 combinations.
 /// Only the ratio between weights matters, so this covers every possible mix.
 pub fn weight_grid(steps: usize) -> Vec<Weights> {
     let share = |part: usize| part as f64 / steps as f64;
@@ -12,13 +12,16 @@ pub fn weight_grid(steps: usize) -> Vec<Weights> {
     for trends in 0..=steps {
         for markov in 0..=(steps - trends) {
             for co_listening in 0..=(steps - trends - markov) {
-                let cf = steps - trends - markov - co_listening;
-                grid.push(Weights {
-                    trends: share(trends),
-                    markov: share(markov),
-                    co_listening: share(co_listening),
-                    cf: share(cf),
-                });
+                for cf in 0..=(steps - trends - markov - co_listening) {
+                    let mf = steps - trends - markov - co_listening - cf;
+                    grid.push(Weights {
+                        trends: share(trends),
+                        markov: share(markov),
+                        co_listening: share(co_listening),
+                        cf: share(cf),
+                        mf: share(mf),
+                    });
+                }
             }
         }
     }
@@ -90,9 +93,9 @@ mod tests {
     #[test]
     fn grid_has_expected_size_and_every_row_sums_to_one() {
         let grid = weight_grid(10);
-        assert_eq!(grid.len(), 286);
+        assert_eq!(grid.len(), 1001);
         for w in &grid {
-            assert!((w.trends + w.markov + w.co_listening + w.cf - 1.0).abs() < 1e-9);
+            assert!((w.trends + w.markov + w.co_listening + w.cf + w.mf - 1.0).abs() < 1e-9);
         }
     }
 

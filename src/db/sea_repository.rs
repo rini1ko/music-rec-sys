@@ -44,10 +44,6 @@ impl SeaOrmRepository {
 
         Ok(Self { runtime, db })
     }
-
-    pub fn open_in_memory() -> Result<Self, DbError> {
-        Self::open("sqlite::memory:")
-    }
 }
 
 impl Repository for SeaOrmRepository {
@@ -67,12 +63,24 @@ impl Repository for SeaOrmRepository {
         self.runtime.block_on(insert_sessions(&self.db, sessions))
     }
 
+    fn replace_sessions(&mut self, sessions: Vec<Session>) -> Result<(), DbError> {
+        self.runtime.block_on(replace_sessions(&self.db, sessions))
+    }
+
     fn all_events(&self) -> Result<Vec<ListenEvent>, DbError> {
         self.runtime.block_on(all_events(&self.db))
     }
 
     fn all_sessions(&self) -> Result<Vec<Session>, DbError> {
         self.runtime.block_on(all_sessions(&self.db))
+    }
+
+    fn all_tracks(&self) -> Result<Vec<Track>, DbError> {
+        self.runtime.block_on(all_tracks(&self.db))
+    }
+
+    fn all_users(&self) -> Result<Vec<User>, DbError> {
+        self.runtime.block_on(all_users(&self.db))
     }
 
     fn user_history(&self, user_index: u32) -> Result<Vec<u32>, DbError> {
@@ -165,15 +173,36 @@ pub(crate) async fn insert_events(
     Ok(())
 }
 
+/// Deletes the stored sessions and inserts `sessions` in one transaction.
+pub(crate) async fn replace_sessions(
+    db: &DatabaseConnection,
+    sessions: Vec<Session>,
+) -> Result<(), DbError> {
+    let txn = db.begin().await?;
+    session::Entity::delete_many().exec(&txn).await?;
+    store_sessions(&txn, sessions).await?;
+    txn.commit().await?;
+    Ok(())
+}
+
 pub(crate) async fn insert_sessions(
     db: &DatabaseConnection,
     sessions: Vec<Session>,
 ) -> Result<(), DbError> {
     let txn = db.begin().await?;
+    store_sessions(&txn, sessions).await?;
+    txn.commit().await?;
+    Ok(())
+}
 
-    ensure_users(&txn, sessions.iter().map(|item| item.user_index).collect()).await?;
+/// Checks the users and tracks of `sessions` and inserts them in chunks.
+async fn store_sessions<C: ConnectionTrait>(
+    conn: &C,
+    sessions: Vec<Session>,
+) -> Result<(), DbError> {
+    ensure_users(conn, sessions.iter().map(|item| item.user_index).collect()).await?;
     ensure_tracks(
-        &txn,
+        conn,
         sessions
             .iter()
             .flat_map(|item| item.tracks.iter().copied())
@@ -186,10 +215,8 @@ pub(crate) async fn insert_sessions(
             .iter()
             .map(session_row)
             .collect::<Result<Vec<_>, _>>()?;
-        session::Entity::insert_many(rows).exec(&txn).await?;
+        session::Entity::insert_many(rows).exec(conn).await?;
     }
-
-    txn.commit().await?;
     Ok(())
 }
 
@@ -400,6 +427,22 @@ pub(crate) async fn find_tracks(
     Ok(found)
 }
 
+/// The user's last `limit` plays, newest first (the user-time index serves it).
+pub(crate) async fn recent_events(
+    db: &DatabaseConnection,
+    user_index: u32,
+    limit: usize,
+) -> Result<Vec<ListenEvent>, DbError> {
+    let rows = listen_event::Entity::find()
+        .filter(listen_event::Column::UserIndex.eq(user_index))
+        .order_by_desc(listen_event::Column::Timestamp)
+        .order_by_desc(listen_event::Column::Id)
+        .limit(limit as u64)
+        .all(db)
+        .await?;
+    Ok(rows.into_iter().map(event_from).collect())
+}
+
 pub(crate) async fn latest_event_time(
     db: &DatabaseConnection,
 ) -> Result<Option<NaiveDateTime>, DbError> {
@@ -564,7 +607,7 @@ mod tests {
     use crate::domain::test_utils::{event_of, session_of, track, user};
 
     fn repo_with(users: &[u32], tracks: &[u32]) -> SeaOrmRepository {
-        let mut repo = SeaOrmRepository::open_in_memory().unwrap();
+        let mut repo = SeaOrmRepository::open("sqlite::memory:").unwrap();
         repo.add_users(users.iter().map(|&u| user(u)).collect())
             .unwrap();
         repo.add_tracks(tracks.iter().map(|&t| track(t)).collect())
@@ -606,7 +649,7 @@ mod tests {
 
     #[test]
     fn first_version_of_a_user_wins() {
-        let mut repo = SeaOrmRepository::open_in_memory().unwrap();
+        let mut repo = SeaOrmRepository::open("sqlite::memory:").unwrap();
         let mut first = user(1);
         first.country = Some("UK".to_string());
         let mut second = user(1);
