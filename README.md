@@ -1,5 +1,7 @@
 # Music Recommendation System
 
+[![CI](https://github.com/rini1ko/music-recommendation-system/actions/workflows/ci.yml/badge.svg)](https://github.com/rini1ko/music-recommendation-system/actions/workflows/ci.yml)
+
 A hybrid music recommender written in Rust, with a small React front end.
 It learns from Last.fm listening history, combines five models with a set
 of rules into one ranked list and explains every recommended track
@@ -33,6 +35,10 @@ your last track", ...). It runs as a command-line tool and as an HTTP API.
   listeners without history) side by side.
 - Weight tuning on a grid, picked on one half of the users and checked on
   the other half.
+- Backtest on consecutive time windows: for each window the models train on
+  every play before it and are judged on the plays inside it. A summary per
+  model shows the mean NDCG, its spread, its trend over the windows and how
+  often the model was the best.
 
 **Data and operations**
 - ETL from CSV into SQLite with progress, broken-row reporting and session
@@ -71,6 +77,24 @@ npm run build
 ```
 
 The first build downloads the Swagger UI files, so it needs internet access.
+
+### Docker
+
+```bash
+docker compose up --build
+```
+
+This builds two images and starts the API on <http://localhost:3000>
+(Swagger UI at `/docs/`) and the front end on <http://localhost:8080>. On the
+first start the API loads `data/sample.csv` into a database on a Docker
+volume. For the full dataset, put the CSV into `./data`, mount `./data` on
+`/app/data`, set `MUSIC_CSV=data/<file>.csv` and remove `MUSIC_LENIENT` in
+`docker-compose.yml`. The image also runs the other commands:
+
+```bash
+docker compose run --rm api eval --db data/music.db
+docker compose run --rm api backtest --db data/music.db --windows 2 --days 1 --lenient
+```
 
 ## Data
 
@@ -111,6 +135,7 @@ cargo run --release -- recommend data/lastfm_valid.csv --user 123 --top 5
 cargo run --release -- eval data/lastfm_valid.csv
 cargo run --release -- eval data/lastfm_valid.csv --global -k 20
 cargo run --release -- tune data/lastfm_valid.csv --steps 10
+cargo run --release -- backtest data/lastfm_valid.csv --windows 4 --days 7
 
 # load into SQLite once, then work on the database
 cargo run --release -- etl data/lastfm_valid.csv --db data/big.db
@@ -134,6 +159,7 @@ cargo run --release -- reset-db --db data/play.db --yes
 | `recommend --user N` | recommendations for one user with an explanation for each |
 | `eval` | every model, the hybrid and the hybrid with rules on a train/test split |
 | `tune` | searches for the best model weights and checks them on other users |
+| `backtest` | every model on consecutive time windows, then mean, spread and trend of the NDCG per model |
 | `etl [--append]` | loads a CSV into SQLite; `--append` skips plays that are already stored |
 | `serve` | starts the HTTP API |
 | `migrate [status\|up\|down]` | shows or applies the schema migrations |
@@ -164,6 +190,7 @@ curl -X POST -H "content-type: application/json" \
 curl -X POST -H "content-type: application/json" \
      -d '{"user":1,"track":929335,"kind":"like"}' http://127.0.0.1:3000/feedback
 curl -X POST http://127.0.0.1:3000/model/evaluate
+curl -X POST "http://127.0.0.1:3000/model/evaluate?windows=4&window_days=7"  # also on time windows
 curl http://127.0.0.1:3000/model/evaluation
 curl -N http://127.0.0.1:3000/events/stream                            # Server-Sent Events
 curl http://127.0.0.1:3000/metrics                                     # Prometheus
@@ -218,13 +245,44 @@ or `--rate-per-second` / `MUSIC_RATE_PER_SECOND`; `cargo run -- serve --help`
 lists them all. The log level follows `RUST_LOG` (for example
 `RUST_LOG=debug`); logs go to the console and to JSON files in `logs/`.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    csv[(Last.fm CSV)] --> etl[ETL: parse, sessions]
+    etl --> db[(SQLite)]
+    db --> train[Training]
+    train --> models["Models: trends, Markov,
+    co-listening, CF, MF"]
+    models --> ranker[Ranker: normalize, weight, merge]
+    ranker --> rec["Recommender: cold start,
+    artist bonus, variety, radio"]
+    rec --> api[HTTP API]
+    rec --> cli[CLI]
+    api --> web[React front end]
+    api -- "POST /events" --> db
+    api -- "plays" --> online[Online counts]
+    online --> models
+    api -- "likes, skips" --> bandit[Thompson sampling]
+    bandit --> ranker
+    db --> eval["Evaluation: split, metrics,
+    tuning, time windows"]
+    models --> eval
+```
+
+The CLI reads a CSV into memory or a SQLite database through the synchronous
+`Repository` trait. The API uses the asynchronous `Store`, keeps the trained
+recommender behind a lock and ranks on a blocking thread. A new play goes to
+the database and to the online counts, so the next list already follows it;
+the full models change only after retraining.
+
 ## Project structure
 
 ```
 src/
   main.rs, cli.rs        command-line entry point and argument definitions
-  commands.rs, tools.rs  the commands: demo, stats, recommend, eval, tune, etl, serve,
-                         simulate, bench, migrate, export, reset-db
+  commands.rs, tools.rs  the commands: demo, stats, recommend, eval, tune, backtest, etl,
+                         serve, simulate, bench, migrate, export, reset-db
   logging.rs             console and JSON-file logging
   domain.rs              users, tracks, plays, sessions, feedback and the result types
   etl/                   CSV rows, loading, session detection, appending without duplicates
@@ -238,7 +296,7 @@ src/
   recommender.rs         the ranker plus cold start, artist bonus, variety and the radio
   engine.rs              weights and configuration, trains every model and wires the ranker
   evaluation/            split, accuracy and beyond-accuracy metrics, model comparison,
-                         evaluation of the rules, weight tuning
+                         evaluation of the rules, weight tuning, time windows (backtest)
   api/                   router and middleware (request ids, rate limit, API key, time limit,
                          metrics), handlers, DTOs, errors, OpenAPI document, cache, SSE stream
   config.rs, config/     server settings and config.toml
@@ -254,6 +312,10 @@ tests/
 frontend/                React + TypeScript + Tailwind front end (Vite)
 data/sample.csv          twelve rows for the demo and the tests (one is broken on purpose)
 config.example.toml      every configuration key with its default
+Dockerfile, docker/      image of the API and the CLI, entrypoint that loads the sample on first start
+frontend/Dockerfile      the built front end behind nginx
+docker-compose.yml       both images together
+.github/workflows/ci.yml fmt, clippy, tests, docs, front-end lint and build, image build
 ```
 
 ## Dependencies
@@ -293,8 +355,8 @@ npm run build
 
 There are two kinds of tests. Unit tests sit next to the code in
 `#[cfg(test)] mod tests` blocks and check single functions, private ones
-included (271 tests). Integration tests in `tests/` use only the public API of
-the library or the built binary (26 tests). The API tests run the real router
+included (280 tests). Integration tests in `tests/` use only the public API of
+the library or the built binary (27 tests). The API tests run the real router
 on an in-memory SQLite database, so they need neither a server nor the full
 dataset. The CLI tests write their databases under `target/`.
 

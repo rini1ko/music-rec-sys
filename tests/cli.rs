@@ -70,6 +70,7 @@ fn help_lists_every_command() {
         "recommend",
         "eval",
         "tune",
+        "backtest",
         "etl",
         "serve",
         "simulate",
@@ -215,4 +216,41 @@ fn migrations_are_applied_and_reset_needs_yes() {
     let reset = run(&["reset-db", "--db", &db.0, "--yes"]);
     assert!(reset.status.success(), "{}", stderr(&reset));
     assert_eq!(count(&stdout(&run(&["stats", "--db", &db.0])), "events"), 0);
+}
+
+#[test]
+fn backtest_judges_each_window_and_sums_them_up() {
+    let out = run(&[
+        "backtest",
+        SAMPLE,
+        "--windows",
+        "2",
+        "--days",
+        "1",
+        "-k",
+        "5",
+        "--lenient",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("window 1: ") && text.contains("window 2: "),
+        "{text}"
+    );
+    // the sample spans two days, so the older window has nothing to train on
+    assert!(text.contains("not judged"), "{text}");
+    assert!(text.contains("best: "), "{text}");
+    assert!(
+        text.contains("mean ndcg") && text.contains("hybrid_rules"),
+        "{text}"
+    );
+
+    let none = run(&["backtest", SAMPLE, "--windows", "0"]);
+    assert_eq!(none.status.code(), Some(2));
+    // too many days for a duration, and a duration that reaches before any date
+    for (days, message) in [("999999999999", "too large"), ("99999999999", "reach back")] {
+        let out = run(&["backtest", SAMPLE, "--days", days]);
+        assert_eq!(out.status.code(), Some(1), "{days}");
+        assert!(stderr(&out).contains(message), "{}", stderr(&out));
+    }
 }

@@ -22,6 +22,8 @@ pub enum Command {
     Eval(EvalArgs),
     /// Search for the best model weights
     Tune(TuneArgs),
+    /// Judge every model on consecutive time windows, each trained on the plays before it
+    Backtest(BacktestArgs),
     /// Load a CSV file into the SQLite database
     Etl(EtlArgs),
     /// Start the HTTP API
@@ -112,6 +114,28 @@ pub struct TuneArgs {
     /// How many of the best combinations to print
     #[arg(long, default_value_t = 5, value_parser = at_least_one)]
     pub show: usize,
+}
+
+#[derive(Debug, Args)]
+pub struct BacktestArgs {
+    #[command(flatten)]
+    pub data: DataArgs,
+
+    /// How many windows; the newest one ends with the newest play
+    #[arg(long, default_value_t = 4, value_parser = at_least_one)]
+    pub windows: usize,
+
+    /// Length of one window in days
+    #[arg(long, default_value_t = 7, value_parser = at_least_one)]
+    pub days: usize,
+
+    /// Length of the recommendation list that is judged
+    #[arg(short = 'k', long = "k", default_value_t = 10, value_parser = at_least_one)]
+    pub k: usize,
+
+    /// Low similarity thresholds, for tiny files such as the sample
+    #[arg(long)]
+    pub lenient: bool,
 }
 
 #[derive(Debug, Default, Args)]

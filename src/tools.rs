@@ -15,13 +15,17 @@ use music_recommendation_system::db::sea_repository::SeaOrmRepository;
 use music_recommendation_system::db::store::Store;
 use music_recommendation_system::engine::EngineConfig;
 use music_recommendation_system::etl::append::append;
+use music_recommendation_system::evaluation::windows::{self, WindowConfig};
 use music_recommendation_system::export::{self, Format};
 
 use crate::cli::{
-    BenchArgs, EtlArgs, ExportArgs, ExportFormat, ExportKind, MigrateAction, MigrateArgs,
-    ResetArgs, SimulateArgs,
+    BacktestArgs, BenchArgs, EtlArgs, ExportArgs, ExportFormat, ExportKind, MigrateAction,
+    MigrateArgs, ResetArgs, SimulateArgs,
 };
 use crate::commands::{load_csv, open, sqlite_url};
+
+/// Window bounds are printed to the minute.
+const MINUTE: &str = "%Y-%m-%d %H:%M";
 
 fn engine_config(lenient: bool) -> EngineConfig {
     if lenient {
@@ -175,6 +179,79 @@ pub fn etl_append(args: &EtlArgs) -> Result<()> {
         report.new_events,
         report.duplicate_events,
         report.sessions
+    );
+    Ok(())
+}
+
+/// `backtest`: every model on consecutive time windows (W1).
+pub fn backtest(args: &BacktestArgs) -> Result<()> {
+    let repo = open(&args.data)?;
+    let events = repo.all_events()?;
+    let tracks = repo.all_tracks()?;
+    let users = repo.all_users()?;
+    let engine = engine_config(args.lenient);
+    let length = i64::try_from(args.days)
+        .ok()
+        .and_then(Duration::try_days)
+        .context("--days is too large")?;
+    let config = WindowConfig {
+        windows: args.windows,
+        length,
+        k: args.k,
+        session_gap: engine.session_gap,
+    };
+
+    let result = windows::backtest(&events, Some((&tracks, &users)), &config, &engine)?;
+    for (number, window) in result.windows.iter().enumerate() {
+        println!(
+            "window {}: {} .. {}, train {} plays, test {} plays, {} users",
+            number + 1,
+            window.from.format(MINUTE),
+            window.to.format(MINUTE),
+            window.train_events,
+            window.test_events,
+            window.users
+        );
+        if !window.is_judged() {
+            println!("  not judged: no plays before it, no plays in it, or nobody with history");
+            continue;
+        }
+        for score in &window.scores {
+            println!(
+                "  {:<14} ndcg@{k} {:.4}  hit@{k} {:.4}",
+                score.model,
+                score.report.ndcg,
+                score.report.hit_rate,
+                k = args.k
+            );
+        }
+        println!("  best: {}", window.best().join(", "));
+    }
+
+    if result.stability.is_empty() {
+        println!("no window could be judged; try more --days or fewer --windows");
+        return Ok(());
+    }
+    println!();
+    println!(
+        "{:<14} {:>7} {:>9} {:>7} {:>7} {:>7} {:>8} {:>5}",
+        "model", "windows", "mean ndcg", "std", "min", "max", "trend", "wins"
+    );
+    for row in &result.stability {
+        println!(
+            "{:<14} {:>7} {:>9.4} {:>7.4} {:>7.4} {:>7.4} {:>+8.4} {:>5}",
+            row.model,
+            row.windows,
+            row.mean_ndcg,
+            row.std_ndcg,
+            row.min_ndcg,
+            row.max_ndcg,
+            row.trend,
+            row.wins
+        );
+    }
+    println!(
+        "trend is the change of NDCG per window: below zero the model does worse on newer plays"
     );
     Ok(())
 }

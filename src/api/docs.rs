@@ -7,7 +7,7 @@ use crate::api::dto::{
     RecommendationDto, RecommendationsResponse, TrackDto, TrackPlaysDto, UserDto, UserSummaryDto,
     UsersResponse, WeightsDto,
 };
-use crate::api::evaluation::{EvaluationStatus, ModelScoreDto};
+use crate::api::evaluation::{EvaluationStatus, ModelScoreDto, StabilityDto, WindowDto};
 use crate::api::feedback::{
     ArmDto, FeedbackDto, FeedbackItemDto, FeedbackKindDto, FeedbackResponse, NewFeedback,
 };
@@ -59,6 +59,8 @@ use crate::api::{compare, evaluation, feedback, handlers, insights, metrics, str
         WeightsDto,
         EvaluationStatus,
         ModelScoreDto,
+        WindowDto,
+        StabilityDto,
         NewFeedback,
         FeedbackKindDto,
         FeedbackDto,

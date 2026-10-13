@@ -33,6 +33,7 @@ pub fn run(command: Option<Command>) -> Result<()> {
         Some(Command::Recommend(args)) => recommend(&args),
         Some(Command::Eval(args)) => eval(&args),
         Some(Command::Tune(args)) => tune_weights(&args),
+        Some(Command::Backtest(args)) => tools::backtest(&args),
         Some(Command::Etl(args)) => etl(&args),
         Some(Command::Serve(args)) => serve(&args),
         Some(Command::Simulate(args)) => tools::simulate_load(&args),

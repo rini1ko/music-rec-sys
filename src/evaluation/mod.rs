@@ -4,6 +4,7 @@ pub mod metrics;
 mod rules;
 pub mod split;
 pub mod tuning;
+pub mod windows;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -24,7 +25,7 @@ use crate::recommender::RecommenderConfig;
 use beyond::BeyondAccuracy;
 
 use metrics::{hit_at_k, ndcg_at_k, precision_at_k, recall_at_k};
-use split::{SplitMode, split};
+use split::{Split, SplitMode, split};
 
 #[derive(Debug, Error)]
 pub enum EvalError {
@@ -34,6 +35,12 @@ pub enum EvalError {
     ZeroK,
     #[error("there are no events to evaluate on")]
     NoEvents,
+    #[error("there must be at least one time window")]
+    ZeroWindows,
+    #[error("a time window must be longer than zero")]
+    EmptyWindow,
+    #[error("the time windows reach back further than a date can go")]
+    WindowsTooLong,
 }
 
 pub struct EvalConfig {
@@ -150,9 +157,20 @@ impl Evaluator {
         }
 
         let parts = split(events, eval.split, eval.test_fraction);
+        Ok(Self::from_split(parts, eval.k, eval.session_gap, engine))
+    }
 
+    /// Trains on `parts.train` and prepares one case per user of `parts.test`.
+    /// The time windows (W1) cut the events themselves and start here; `k`
+    /// must be at least 1.
+    pub fn from_split(
+        parts: Split,
+        k: usize,
+        session_gap: Duration,
+        engine: &EngineConfig,
+    ) -> Self {
         // everything below uses ONLY training data, models never see the test part
-        let train_sessions = sessionize_all(parts.train.clone(), eval.session_gap);
+        let train_sessions = sessionize_all(parts.train.clone(), session_gap);
         let ranker = build_ranker_from_data(&parts.train, &train_sessions, engine);
         let histories = histories(&parts.train);
         let mut popularity: HashMap<u32, usize> = HashMap::new();
@@ -161,7 +179,7 @@ impl Evaluator {
         }
 
         let mut evaluator = Evaluator {
-            k: eval.k,
+            k,
             ranker,
             cases: Vec::new(),
             train_events: parts.train.len(),
@@ -204,7 +222,7 @@ impl Evaluator {
             });
         }
 
-        Ok(evaluator)
+        evaluator
     }
 
     pub fn set_weights(&mut self, weights: Weights) {
