@@ -5,6 +5,10 @@
 # into data/music.db; mount a volume on /app/data to keep the database.
 
 FROM rust:1-slim-bookworm AS build
+# the build script of utoipa-swagger-ui downloads the Swagger UI files with curl
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
