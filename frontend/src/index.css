@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+/* Colors as variables, so the SVG charts can use them as well as the classes. */
+:root {
+  color-scheme: dark;
+  --canvas: #020617;
+  --surface: #0f172a;
+  --line: #1e293b;
+  --fg: #f1f5f9;
+  --fg-subtle: #64748b;
+  /* single-series chart marks, checked with the dataviz validator against --surface */
+  --chart-1: #3987e5;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-raised: #1e293b;
+  --color-line: var(--line);
+  --color-line-strong: #334155;
+  --color-fg: var(--fg);
+  --color-fg-muted: #94a3b8;
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: #10b981;
+  --color-accent-hover: #34d399;
+  --color-accent-fg: #022c22;
+  --color-accent-text: #6ee7b7;
+  --color-danger-text: #fda4af;
+  --color-danger-surface: #4c0519;
+  --color-danger-line: #881337;
+  --color-warning-text: #fcd34d;
+  --color-warning-surface: #451a03;
+  --color-warning-line: #92400e;
+  --color-chart-1: var(--chart-1);
+}
+
+body {
+  background-color: var(--canvas);
+  color: var(--fg);
+}
+
+dialog::backdrop {
+  background: rgb(2 6 23 / 0.7);
+}

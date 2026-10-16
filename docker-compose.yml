@@ -1,0 +1,33 @@
+# The API on http://localhost:3000 (Swagger UI at /docs) and the front end on
+# http://localhost:8080. The first start loads data/sample.csv into a volume.
+#   docker compose up --build
+# For the full dataset put the CSV in ./data, set MUSIC_CSV=data/<file>.csv,
+# remove MUSIC_LENIENT and mount ./data instead of the volume.
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # relaxed thresholds: the sample has twelve rows
+      MUSIC_LENIENT: "true"
+      MUSIC_CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      RUST_LOG: info
+    volumes:
+      - music-data:/app/data
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        # the browser calls the API, so this is the address on the host
+        VITE_API_URL: http://localhost:3000
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  music-data:

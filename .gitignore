@@ -1,1 +1,8 @@
 /target
+/data/lastfm_valid.csv
+*.db
+*.db-wal
+*.db-shm
+logs/
+# may hold the API key, see config.example.toml
+/config.toml

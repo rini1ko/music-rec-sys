@@ -1,0 +1,13 @@
+user_index,artist_index,track_index,timestamp,artist_name,track_name,gender,age,country
+0,55127,929335,2009-05-04T13:06:09,坂本龍一,The Last Emperor (Theme),male,,Japan
+0,55127,267920,2009-05-04T12:55:34,坂本龍一,Tibetan Dance (Version),male,,Japan
+0,60958,825810,2009-05-03T15:48:25,Underworld,"Boy, Boy, Boy (Switch Remix)",male,,Japan
+1,60958,195630,2009-05-03T15:37:56,Underworld,Crocodile (Innervisions),female,24,Germany
+1,55127,929335,not-a-date,坂本龍一,The Last Emperor (Theme),female,24,Germany
+2,70001,500100,2009-05-05T09:00:00,Radiohead,Karma Police,,31,UK
+2,55127,929335,2009-05-05T09:10:00,坂本龍一,The Last Emperor (Theme),,31,UK
+2,55127,929335,2009-05-04T20:00:00,坂本龍一,The Last Emperor (Theme),,31,UK
+3,70001,500100,2009-05-05T08:00:00,Radiohead,Karma Police,male,28,UK
+3,55127,929335,2009-05-05T08:05:00,坂本龍一,The Last Emperor (Theme),male,28,UK
+3,55127,267920,2009-05-05T08:10:00,坂本龍一,Tibetan Dance (Version),male,28,UK
+3,60958,195630,2009-05-05T08:12:00,Underworld,Crocodile (Innervisions),male,28,UK

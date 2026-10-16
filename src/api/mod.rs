@@ -1,0 +1,406 @@
+pub mod compare;
+pub mod docs;
+pub mod dto;
+pub mod error;
+pub mod evaluation;
+pub mod extract;
+pub mod feedback;
+pub mod guard;
+pub mod handlers;
+pub mod insights;
+pub mod metrics;
+pub mod rec_cache;
+pub mod state;
+pub mod stream;
+#[cfg(test)]
+mod test_support;
+
+use axum::Router;
+use axum::extract::DefaultBodyLimit;
+use axum::http::header::{CONTENT_TYPE, HeaderName, InvalidHeaderValue};
+use axum::http::{HeaderValue, Method};
+use axum::middleware::{from_fn, from_fn_with_state};
+use axum::routing::{get, post};
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
+
+use crate::api::state::AppState;
+
+/// Every endpoint with its middleware. From the outside in: request id,
+/// tracing, rate limit, body size limit, time limit, metrics (after routing,
+/// so it sees the route template), and the API key on writes and service calls.
+pub fn router(state: AppState) -> Router {
+    let key = || from_fn_with_state(state.clone(), guard::require_api_key);
+    let body_limit = state.settings.body_limit;
+
+    Router::new()
+        .route("/health", get(handlers::health))
+        .route("/metrics", get(metrics::metrics))
+        .route("/recommendations", get(handlers::recommendations))
+        .route("/recommendations/compare", get(compare::compare))
+        .route("/events", post(handlers::add_event).route_layer(key()))
+        .route("/events/stream", get(stream::event_stream))
+        .route("/users/{user_index}", get(handlers::user))
+        .route("/model", get(handlers::model_status))
+        .route("/model/retrain", post(handlers::retrain).route_layer(key()))
+        .route(
+            "/model/evaluate",
+            post(evaluation::start_evaluation).route_layer(key()),
+        )
+        .route("/model/evaluation", get(evaluation::evaluation))
+        .route("/feedback", post(feedback::add_feedback).route_layer(key()))
+        .route("/users/{user_index}/feedback", get(feedback::user_feedback))
+        .route("/tracks", get(handlers::search_tracks))
+        .route(
+            "/users",
+            get(handlers::list_users).merge(post(handlers::create_user).route_layer(key())),
+        )
+        .route(
+            "/tracks/{track_index}/similar",
+            get(handlers::similar_tracks),
+        )
+        .route("/tracks/{track_index}", get(insights::track))
+        .route("/stats/overview", get(insights::overview))
+        .route("/artists", get(insights::search_artists))
+        .route("/artists/{artist_index}", get(insights::artist))
+        .route("/users/{user_index}/history", get(insights::user_history))
+        .route("/users/{user_index}/radio", get(insights::radio))
+        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", docs::ApiDoc::openapi()))
+        .fallback(extract::not_found)
+        .method_not_allowed_fallback(extract::method_not_allowed)
+        .route_layer(from_fn_with_state(state.clone(), metrics::track_requests))
+        .layer(from_fn_with_state(state.clone(), guard::time_limit))
+        .layer(DefaultBodyLimit::max(body_limit))
+        .layer(from_fn_with_state(state.clone(), guard::rate_limit))
+        .layer(TraceLayer::new_for_http())
+        .layer(from_fn(guard::request_id))
+        .with_state(state)
+}
+
+/// Lets a browser app served from one of `origins` call the API.
+pub fn cors(origins: &[String]) -> Result<CorsLayer, InvalidHeaderValue> {
+    let origins = origins
+        .iter()
+        .map(|origin| HeaderValue::from_str(origin))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let request_id = HeaderName::from_static(guard::REQUEST_ID);
+    Ok(CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([
+            CONTENT_TYPE,
+            HeaderName::from_static(guard::API_KEY),
+            request_id.clone(),
+        ])
+        .expose_headers([request_id]))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::api::test_support::{app, get_json, send, state};
+    use crate::domain::Track;
+    use crate::engine::EngineConfig;
+
+    #[tokio::test]
+    async fn health_reports_counts() {
+        let (status, body) = get_json("/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["users"], 2);
+        assert_eq!(body["events"], 5);
+    }
+
+    #[tokio::test]
+    async fn recommendations_come_with_reasons() {
+        let (status, body) = get_json("/recommendations?user=1&top=3").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["user"], 1);
+        assert_eq!(body["history_len"], 2);
+        assert_eq!(body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(body["items"][0]["track_index"], 12);
+        assert!(!body["items"][0]["reasons"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_user_is_404() {
+        let (status, body) = get_json("/recommendations?user=99").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("99"));
+    }
+
+    #[tokio::test]
+    async fn top_must_be_in_range() {
+        let (status, _) = get_json("/recommendations?user=1&top=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn user_is_required() {
+        let (status, _) = get_json("/recommendations").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unknown_route_is_404() {
+        let (status, _) = get_json("/nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn posted_event_shows_up_in_the_history() {
+        let app = app().await;
+        let (status, body) = send(&app, "POST", "/events", Some(r#"{"user":1,"track":12}"#)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["track"], 12);
+
+        let (_, user) = send(&app, "GET", "/users/1", None).await;
+        assert_eq!(user["history_len"], 3);
+        assert_eq!(user["recent"][0]["track_index"], 12);
+    }
+
+    #[tokio::test]
+    async fn event_of_an_unknown_track_is_404() {
+        let app = app().await;
+        let (status, body) = send(&app, "POST", "/events", Some(r#"{"user":1,"track":999}"#)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["error"].as_str().unwrap().contains("999"));
+    }
+
+    #[tokio::test]
+    async fn user_profile_has_recent_tracks() {
+        let (status, body) = get_json("/users/2").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["user_index"], 2);
+        assert_eq!(body["history_len"], 3);
+        assert_eq!(body["recent"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn unknown_user_profile_is_404() {
+        let (status, _) = get_json("/users/99").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn user_id_must_be_a_number() {
+        let (status, _) = get_json("/users/abc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    async fn wait_for_training(app: &Router) {
+        for _ in 0..100 {
+            let (_, status) = send(app, "GET", "/model", None).await;
+            if status["training"] == false {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("training did not finish");
+    }
+
+    #[tokio::test]
+    async fn model_status_describes_the_models() {
+        let (status, body) = get_json("/model").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["training"], false);
+        assert_eq!(body["events"], 5);
+        assert_eq!(body["sessions"], 2);
+    }
+
+    #[tokio::test]
+    async fn model_status_reports_the_default_weights() {
+        let (_, body) = get_json("/model").await;
+        let weights = EngineConfig::lenient().weights;
+        let reported = |name: &str| body["weights"][name].as_f64().unwrap();
+        assert!((reported("trends") - weights.trends).abs() < 1e-9);
+        assert!((reported("markov") - weights.markov).abs() < 1e-9);
+        assert!((reported("co_listening") - weights.co_listening).abs() < 1e-9);
+        assert!((reported("cf") - weights.cf).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn only_one_training_runs_at_a_time() {
+        let state = state().await;
+        assert!(state.retrain());
+        assert!(!state.retrain());
+    }
+
+    #[tokio::test]
+    async fn retraining_picks_up_new_events() {
+        let app = app().await;
+        let (_, before) = send(&app, "GET", "/recommendations?user=1&top=5", None).await;
+        assert_eq!(before["items"].as_array().unwrap().len(), 1);
+
+        send(&app, "POST", "/events", Some(r#"{"user":2,"track":13}"#)).await;
+        let (status, _) = send(&app, "POST", "/model/retrain", None).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        wait_for_training(&app).await;
+
+        let (_, after) = send(&app, "GET", "/recommendations?user=1&top=5", None).await;
+        let tracks: Vec<u64> = after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["track_index"].as_u64().unwrap())
+            .collect();
+        assert!(tracks.contains(&13));
+    }
+    #[tokio::test]
+    async fn openapi_document_lists_the_endpoints() {
+        let (status, body) = get_json("/api-docs/openapi.json").await;
+        assert_eq!(status, StatusCode::OK);
+        for path in [
+            "/health",
+            "/recommendations",
+            "/events",
+            "/users/{user_index}",
+            "/model",
+            "/model/retrain",
+            "/users",
+            "/tracks",
+            "/tracks/{track_index}/similar",
+            "/tracks/{track_index}",
+            "/model/evaluate",
+            "/model/evaluation",
+            "/feedback",
+            "/users/{user_index}/feedback",
+            "/events/stream",
+            "/recommendations/compare",
+            "/metrics",
+            "/stats/overview",
+            "/artists",
+            "/artists/{artist_index}",
+            "/users/{user_index}/history",
+            "/users/{user_index}/radio",
+        ] {
+            assert!(body["paths"][path].is_object(), "{path} is not documented");
+        }
+    }
+
+    #[tokio::test]
+    async fn cors_allows_the_frontend_origin() {
+        let layer = cors(&["http://localhost:5173".to_string()]).unwrap();
+        let app = router(state().await).layer(layer);
+
+        let request = Request::builder()
+            .method("OPTIONS")
+            .uri("/events")
+            .header("origin", "http://localhost:5173")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "content-type")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.headers()["access-control-allow-origin"],
+            "http://localhost:5173"
+        );
+    }
+
+    #[tokio::test]
+    async fn users_are_listed_most_active_first() {
+        let (status, body) = get_json("/users?limit=1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["items"].as_array().unwrap().len(), 1);
+        assert_eq!(body["items"][0]["user_index"], 2);
+        assert_eq!(body["items"][0]["plays"], 3);
+    }
+
+    #[tokio::test]
+    async fn users_limit_must_be_in_range() {
+        let (status, _) = get_json("/users?limit=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn tracks_are_searched_by_name() {
+        let state = state().await;
+        let named = |index: u32, title: &str, artist: &str| Track {
+            track_index: index,
+            artist_index: index,
+            track_name: Some(title.to_string()),
+            artist_name: Some(artist.to_string()),
+        };
+        state
+            .store
+            .add_tracks(vec![
+                named(20, "Crocodile", "Underworld"),
+                named(21, "Kids", "MGMT"),
+            ])
+            .await
+            .unwrap();
+        let app = router(state);
+
+        let (status, body) = send(&app, "GET", "/tracks?q=underworld", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["title"], "Crocodile");
+    }
+
+    #[tokio::test]
+    async fn search_text_must_be_long_enough() {
+        let (status, _) = get_json("/tracks?q=a").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, _) = get_json("/tracks").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn new_user_gets_popular_tracks() {
+        let app = app().await;
+        let (status, created) = send(&app, "POST", "/users", Some(r#"{"country":"UK"}"#)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(created["history_len"], 0);
+
+        let uri = format!("/recommendations?user={}&top=5", created["user_index"]);
+        let (status, body) = send(&app, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body["items"].as_array().unwrap().is_empty());
+        assert_eq!(body["items"][0]["reasons"][0]["source"], "popular");
+    }
+
+    #[tokio::test]
+    async fn invalid_new_user_is_rejected() {
+        let app = app().await;
+        let (status, _) = send(&app, "POST", "/users", Some(r#"{"age":500}"#)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn similar_tracks_follow_the_track() {
+        let (status, body) = get_json("/tracks/10/similar?top=5").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let items = body.as_array().unwrap();
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|item| item["track_index"] != 10));
+    }
+
+    #[tokio::test]
+    async fn similar_tracks_of_an_unknown_track_is_404() {
+        let (status, _) = get_json("/tracks/999/similar").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn weights_can_be_changed_per_request() {
+        let silent = "/recommendations?user=1&trends=0&markov=0&co_listening=0&cf=0";
+        let (status, body) = get_json(silent).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["items"].as_array().unwrap().is_empty());
+
+        let (status, _) = get_json("/recommendations?user=1&cf=-1").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
