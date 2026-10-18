@@ -281,9 +281,18 @@ mod tests {
         // `%%` used to match every track
         assert!(store.search_tracks("%%", 10).await.unwrap().is_empty());
         let percent = store.search_tracks("0%", 10).await.unwrap();
-        assert_eq!(percent.iter().map(|t| t.track_index).collect::<Vec<_>>(), [1]);
+        assert_eq!(
+            percent.iter().map(|t| t.track_index).collect::<Vec<_>>(),
+            [1]
+        );
         // `_` is not "any character" any more
-        assert!(store.search_tracks("Snake-Charmer", 10).await.unwrap().is_empty());
+        assert!(
+            store
+                .search_tracks("Snake-Charmer", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(store.search_tracks("ke_ch", 10).await.unwrap().len(), 1);
         assert!(store.search_tracks("S_ake", 10).await.unwrap().is_empty());
     }

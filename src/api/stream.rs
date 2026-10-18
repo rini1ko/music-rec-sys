@@ -62,7 +62,10 @@ async fn next_event(
 pub async fn event_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let stream = unfold((state.plays.subscribe(), state.shutdown_watch()), next_event);
+    let stream = unfold(
+        (state.plays.subscribe(), state.shutdown_watch()),
+        next_event,
+    );
     // the keep-alive comments stop proxies from closing a quiet stream
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
