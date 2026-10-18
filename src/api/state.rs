@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinError;
 
 use chrono::{DateTime, Utc};
@@ -13,6 +13,7 @@ use crate::api::evaluation::EvaluationStatus;
 use crate::api::guard::RateLimiter;
 use crate::api::metrics::Metrics;
 use crate::api::rec_cache::RecommendationCache;
+use crate::api::served::ServedSources;
 use crate::api::stream;
 use crate::config::ServerSettings;
 use crate::db::error::DbError;
@@ -74,9 +75,13 @@ pub struct AppState {
     pub(crate) metrics: Arc<Metrics>,
     pub(crate) limiter: Arc<RateLimiter>,
     pub(crate) cache: Arc<RecommendationCache>,
+    /// Who proposed the tracks of the lists served, for `POST /feedback`.
+    pub(crate) served: Arc<ServedSources>,
     online: Arc<Mutex<OnlineSlots>>,
     /// Every stored play, for `GET /events/stream` (R5).
     pub(crate) plays: broadcast::Sender<EventDto>,
+    /// Turns `true` when the server starts to shut down, so the open streams end.
+    shutdown: Arc<watch::Sender<bool>>,
 }
 
 /// Online counts (R1) of the models in use and, while a training runs, of the
@@ -107,10 +112,24 @@ impl AppState {
                 settings.rate_burst,
             )),
             cache: Arc::new(RecommendationCache::new(settings.cache_capacity)),
+            served: Arc::new(ServedSources::new()),
             metrics: Arc::new(Metrics::default()),
             plays: stream::channel(),
+            shutdown: Arc::new(watch::channel(false).0),
             settings: Arc::new(settings),
         }
+    }
+
+    /// Tells the open `GET /events/stream` connections to finish. The play
+    /// channel cannot do it: its sender lives in this state, so it never closes.
+    pub fn begin_shutdown(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    /// Watches [`AppState::begin_shutdown`]; a new receiver sees a shutdown
+    /// that has already begun.
+    pub(crate) fn shutdown_watch(&self) -> watch::Receiver<bool> {
+        self.shutdown.subscribe()
     }
 
     /// The same state with other limits, key and cache size.

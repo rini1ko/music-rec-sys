@@ -10,6 +10,7 @@ pub mod handlers;
 pub mod insights;
 pub mod metrics;
 pub mod rec_cache;
+pub mod served;
 pub mod state;
 pub mod stream;
 #[cfg(test)]

@@ -16,12 +16,10 @@ use crate::api::handlers::check_range;
 use crate::api::state::AppState;
 use crate::domain::{Feedback, FeedbackKind};
 use crate::engine::Weights;
-use crate::models::bandit::{ArmStats, arm_stats, credited_source};
+use crate::models::bandit::{ArmStats, arm_stats};
 use crate::recommender::WeightOverrides;
 
 const MAX_PAGE: usize = 200;
-/// How deep the listener's list is searched for the track that gets feedback.
-const CREDIT_DEPTH: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -116,7 +114,8 @@ pub(crate) fn drawn_weights(drawn: WeightOverrides, configured: Weights) -> Weig
     }
 }
 
-/// Records a like or a skip and credits it to the model behind the track.
+/// Records a like or a skip and credits it to the model that proposed the track
+/// on the list the listener was shown (`null` if the track was never on one).
 #[utoipa::path(
     post,
     path = "/feedback",
@@ -133,27 +132,12 @@ pub async fn add_feedback(
     State(state): State<AppState>,
     ApiJson(new): ApiJson<NewFeedback>,
 ) -> Result<(StatusCode, Json<FeedbackDto>), ApiError> {
-    let Some(user) = state.store.user(new.user).await? else {
+    if state.store.user(new.user).await?.is_none() {
         return Err(ApiError::NotFound(format!("user {} not found", new.user)));
-    };
-    let history = state.store.history(new.user).await?;
+    }
 
-    // rank again with the configured weights to see who proposed the track
-    let track = new.track;
-    let source = state
-        .rank(move |recommender| {
-            recommender
-                .recommend(
-                    history,
-                    user.country.as_deref(),
-                    CREDIT_DEPTH,
-                    WeightOverrides::default(),
-                )
-                .into_iter()
-                .find(|item| item.track_index == track)
-                .and_then(|item| credited_source(&item.reasons))
-        })
-        .await?;
+    // noted when the list was served, with the weights that built it
+    let source = state.served.credit(new.user, new.track);
 
     let feedback = Feedback {
         user_index: new.user,
@@ -242,6 +226,8 @@ mod tests {
     async fn feedback_is_credited_and_turns_the_bandit_on() {
         let app = router(state().await);
         // user 1 played 10 and 11; 12 is on their list thanks to the models
+        let (_, list) = send(&app, "GET", "/recommendations?user=1&bandit=false", None).await;
+        assert_eq!(list["items"][0]["track_index"], 12);
         let (status, body) = send(
             &app,
             "POST",
@@ -271,7 +257,8 @@ mod tests {
     #[tokio::test]
     async fn a_track_no_model_proposed_has_no_source() {
         let app = router(state().await);
-        // 13 was never played, so no model knows it
+        // 13 was never played, so no model knows it and it is on no list
+        send(&app, "GET", "/recommendations?user=1&bandit=false", None).await;
         let (status, body) = send(
             &app,
             "POST",
@@ -284,6 +271,26 @@ mod tests {
 
         let (_, list) = send(&app, "GET", "/recommendations?user=1", None).await;
         assert!(list["bandit_weights"].is_null());
+    }
+
+    #[tokio::test]
+    async fn feedback_after_the_play_is_still_credited() {
+        let app = router(state().await);
+        let (_, list) = send(&app, "GET", "/recommendations?user=1&bandit=false", None).await;
+        assert_eq!(list["items"][0]["track_index"], 12);
+
+        // the listener plays 12 from the list, and only then likes it
+        let (status, _) = send(&app, "POST", "/events", Some(r#"{"user":1,"track":12}"#)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, body) = send(
+            &app,
+            "POST",
+            "/feedback",
+            Some(r#"{"user":1,"track":12,"kind":"like"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(body["source"].is_string(), "{body}");
     }
 
     #[tokio::test]

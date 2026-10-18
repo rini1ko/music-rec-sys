@@ -53,7 +53,8 @@ pub struct WindowScores {
     /// Users the plain ranking judged in this window.
     pub users: usize,
     /// Each model alone, the hybrid and the hybrid with rules. Empty when the
-    /// window had no training events, no plays or nobody to judge.
+    /// window had no training events, no plays or no listener with a history
+    /// to judge.
     pub scores: Vec<ModelScore>,
 }
 
@@ -197,7 +198,10 @@ fn judge_window(
         evaluator = evaluator.with_catalog(tracks, users);
     }
     window.users = evaluator.case_count();
-    if window.users == 0 && evaluator.cold_case_count() == 0 {
+    // listeners without history can only be served by the rules, so they say
+    // nothing about the models: judging such a window would give every plain
+    // model an NDCG of 0.0 from nobody and let the rules win for free
+    if window.users == 0 {
         return window;
     }
     window.scores = compare_models(&mut evaluator, engine.weights);
@@ -391,6 +395,23 @@ mod tests {
             .find(|row| row.model == "hybrid")
             .unwrap();
         assert!(hybrid.windows < 3);
+    }
+
+    #[test]
+    fn a_window_with_only_new_listeners_is_not_judged() {
+        // everybody known plays on day 0, and only user 99, who has no
+        // history, plays in the window
+        let mut events: Vec<ListenEvent> = daily_album(1);
+        for step in 0..3u32 {
+            events.push(event_of(99, step + 1, 24 * 60 + 400 + i64::from(step) * 4));
+        }
+        let result = backtest(&events, None, &config(1), &EngineConfig::lenient()).unwrap();
+
+        let window = &result.windows[0];
+        assert!(window.train_events > 0 && window.test_events > 0);
+        assert_eq!(window.users, 0);
+        assert!(!window.is_judged());
+        assert!(result.stability.is_empty());
     }
 
     #[test]

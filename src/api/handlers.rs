@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDateTime, Utc};
 
 use crate::api::dto::{
     ErrorBody, EventDto, HealthDto, NewEvent, NewUser, RecommendQuery, RecommendationDto,
@@ -16,7 +16,7 @@ use crate::api::feedback::drawn_weights;
 use crate::api::rec_cache::CacheKey;
 use crate::api::state::{AppState, ModelStatus};
 use crate::domain::ListenEvent;
-use crate::models::bandit::{arm_stats, sample_overrides};
+use crate::models::bandit::{arm_stats, credited_source, sample_overrides};
 use crate::models::online::session_tail;
 use crate::ranker::Recommendation;
 use crate::recommender::WeightOverrides;
@@ -30,6 +30,10 @@ const MAX_SEARCH_RESULTS: usize = 50;
 const MIN_SEARCH_LEN: usize = 2;
 const MAX_COUNTRY_LEN: usize = 56;
 const MAX_GENDER_LEN: usize = 20;
+/// How far past the newest stored play a client may date a new one. A play
+/// dated years ahead would become the "latest" time, which every default
+/// timestamp and every trend window is counted from.
+const MAX_FUTURE_SKEW_HOURS: i64 = 24;
 
 pub(crate) fn check_range(name: &str, value: usize, max: usize) -> Result<(), ApiError> {
     if (1..=max).contains(&value) {
@@ -75,6 +79,40 @@ fn clean(name: &str, text: Option<String>, max: usize) -> Result<Option<String>,
         )));
     }
     Ok(Some(text.to_string()))
+}
+
+/// The time of a new play. A client's own time is kept unless it is too far
+/// past the newest play; without one, the play comes a minute after the newest
+/// (or now, in an empty store).
+async fn play_time(
+    state: &AppState,
+    requested: Option<NaiveDateTime>,
+) -> Result<NaiveDateTime, ApiError> {
+    let latest = state.store.latest_event_time().await?;
+    match requested {
+        Some(timestamp) => {
+            let reference = latest.unwrap_or_else(|| Utc::now().naive_utc());
+            // no limit when the sum does not fit: nothing can be later than it
+            let limit = reference.checked_add_signed(Duration::hours(MAX_FUTURE_SKEW_HOURS));
+            if limit.is_some_and(|limit| timestamp > limit) {
+                return Err(ApiError::BadRequest(format!(
+                    "timestamp is more than {MAX_FUTURE_SKEW_HOURS} hours after the latest play"
+                )));
+            }
+            Ok(timestamp)
+        }
+        None => match latest {
+            Some(latest) => latest
+                .checked_add_signed(Duration::minutes(1))
+                .ok_or_else(|| {
+                    ApiError::BadRequest(
+                        "the latest play is too late to add a newer one, pass a timestamp"
+                            .to_string(),
+                    )
+                }),
+            None => Ok(Utc::now().naive_utc()),
+        },
+    }
 }
 
 /// Adds the title and the artist to ranked tracks, with one query for all of them.
@@ -166,6 +204,14 @@ pub async fn recommendations(
             recommender.recommend(history, user.country.as_deref(), top, overrides)
         })
         .await?;
+    // note who proposed each track now: a feedback comes after the plays, when
+    // a new ranking would not find the heard tracks any more
+    state.served.record(
+        query.user,
+        ranked
+            .iter()
+            .map(|item| (item.track_index, credited_source(&item.reasons))),
+    );
 
     let response = RecommendationsResponse {
         user: query.user,
@@ -222,6 +268,7 @@ pub async fn similar_tracks(
     request_body = NewEvent,
     responses(
         (status = 201, description = "The event was stored", body = EventDto),
+        (status = 400, description = "`timestamp` is too far after the latest play", body = ErrorBody),
         (status = 404, description = "Unknown user or track", body = ErrorBody),
     )
 )]
@@ -229,15 +276,7 @@ pub async fn add_event(
     State(state): State<AppState>,
     ApiJson(new): ApiJson<NewEvent>,
 ) -> Result<(StatusCode, Json<EventDto>), ApiError> {
-    let timestamp = match new.timestamp {
-        Some(timestamp) => timestamp,
-        None => state
-            .store
-            .latest_event_time()
-            .await?
-            .map(|latest| latest + Duration::minutes(1))
-            .unwrap_or_else(|| Utc::now().naive_utc()),
-    };
+    let timestamp = play_time(&state, new.timestamp).await?;
 
     // the two plays before this one decide which transitions it adds (R1, R2)
     let recent = state.store.recent_events(new.user, 2).await?;
@@ -465,6 +504,24 @@ mod tests {
                 .iter()
                 .any(|reason| reason["source"] == "markov")
         );
+    }
+
+    #[tokio::test]
+    async fn a_play_dated_far_ahead_is_rejected() {
+        let state = state().await;
+        let app = router(state.clone());
+        let latest = state.store.latest_event_time().await.unwrap().unwrap();
+
+        let far = r#"{"user":1,"track":13,"timestamp":"9999-01-01T00:00:00"}"#;
+        let (status, _) = send(&app, "POST", "/events", Some(far)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // nothing was stored, so the default time is still right after the newest play
+        assert_eq!(state.store.latest_event_time().await.unwrap(), Some(latest));
+
+        let near = (latest + chrono::Duration::hours(1)).format("%Y-%m-%dT%H:%M:%S");
+        let body = format!(r#"{{"user":1,"track":13,"timestamp":"{near}"}}"#);
+        let (status, _) = send(&app, "POST", "/events", Some(body.as_str())).await;
+        assert_eq!(status, StatusCode::CREATED);
     }
 
     #[tokio::test]

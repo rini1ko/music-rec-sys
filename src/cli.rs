@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use music_recommendation_system::config::Secret;
 
 pub const DEFAULT_DATA: &str = "data/sample.csv";
 pub const DEFAULT_DB: &str = "data/music.db";
@@ -176,7 +177,7 @@ pub struct ServeArgs {
 
     /// Key required in x-api-key for writes and /model/* actions [default: none, all open]
     #[arg(long, env = "MUSIC_API_KEY", hide_env_values = true)]
-    pub api_key: Option<String>,
+    pub api_key: Option<Secret>,
 
     /// Average requests per second per client, 0 turns the limit off [default: 20]
     #[arg(long, env = "MUSIC_RATE_PER_SECOND")]

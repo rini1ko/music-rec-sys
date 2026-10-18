@@ -11,6 +11,7 @@ use futures_util::Stream;
 use futures_util::stream::unfold;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::{self, Receiver};
+use tokio::sync::watch;
 
 use crate::api::dto::EventDto;
 use crate::api::state::AppState;
@@ -22,19 +23,32 @@ pub fn channel() -> broadcast::Sender<EventDto> {
     broadcast::channel(CHANNEL_SIZE).0
 }
 
-/// The next SSE event of one client, `None` when the server shuts the channel.
+/// What one client keeps between two events: its plays and the shutdown flag.
+type Client = (Receiver<EventDto>, watch::Receiver<bool>);
+
+/// The next SSE event of one client, `None` when the server shuts the channel
+/// or starts to shut down (the sender of the channel lives in the state, so
+/// the channel alone is never closed while the server runs).
 async fn next_event(
-    mut receiver: Receiver<EventDto>,
-) -> Option<(Result<Event, Infallible>, Receiver<EventDto>)> {
-    let event = match receiver.recv().await {
-        Ok(play) => Event::default()
-            .event("play")
-            .json_data(&play)
-            .unwrap_or_else(|_| Event::default().comment("a play could not be encoded")),
-        Err(RecvError::Lagged(missed)) => Event::default().event("lagged").data(missed.to_string()),
-        Err(RecvError::Closed) => return None,
+    (mut receiver, mut shutdown): Client,
+) -> Option<(Result<Event, Infallible>, Client)> {
+    let event = tokio::select! {
+        received = receiver.recv() => match received {
+            Ok(play) => Event::default()
+                .event("play")
+                .json_data(&play)
+                .unwrap_or_else(|_| Event::default().comment("a play could not be encoded")),
+            Err(RecvError::Lagged(missed)) => {
+                Event::default().event("lagged").data(missed.to_string())
+            }
+            Err(RecvError::Closed) => return None,
+        },
+        () = async {
+            // an error means the state is gone, which ends the stream too
+            let _ = shutdown.wait_for(|stopping| *stopping).await;
+        } => return None,
     };
-    Some((Ok(event), receiver))
+    Some((Ok(event), (receiver, shutdown)))
 }
 
 /// Plays as they are stored, as Server-Sent Events (`event: play`, JSON data
@@ -48,7 +62,7 @@ async fn next_event(
 pub async fn event_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let stream = unfold(state.plays.subscribe(), next_event);
+    let stream = unfold((state.plays.subscribe(), state.shutdown_watch()), next_event);
     // the keep-alive comments stop proxies from closing a quiet stream
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -88,6 +102,24 @@ mod tests {
         let text = String::from_utf8(chunk.to_vec()).unwrap();
         assert!(text.contains("event: play"), "{text}");
         assert!(text.contains(r#""track":13"#), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_open_stream_ends_when_the_server_shuts_down() {
+        let state = state().await;
+        let app = router(state.clone());
+        let response = app
+            .oneshot(Request::get("/events/stream").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let mut body = response.into_body().into_data_stream();
+
+        state.begin_shutdown();
+
+        let end = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .expect("the stream ends instead of waiting for a play");
+        assert!(end.is_none());
     }
 
     #[tokio::test]

@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{Duration, NaiveDateTime};
 use sea_orm::{
-    ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
     FromQueryResult, JoinType, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, RelationTrait,
-    Set, TransactionTrait,
+    Set, TransactionTrait, Value,
 };
 use tokio::runtime::{Builder, Runtime};
 
@@ -12,6 +12,7 @@ use crate::db::entities::{listen_event, session, track, user};
 use crate::db::error::DbError;
 use crate::db::repository::{Counts, Repository};
 use crate::db::schema::{connect, create_schema};
+use crate::db::sql::{bound, contains_pattern, offset_value, statement};
 use crate::domain::{ListenEvent, Session, Track, User, UserSummary, UsersPage};
 
 /// Rows per INSERT / per `IN (...)` query. SQLite allows about 32k bound
@@ -483,7 +484,7 @@ pub(crate) async fn users_page(
         .order_by_desc(listen_event::Column::Id.count())
         .order_by_asc(user::Column::UserIndex)
         .limit(limit as u64)
-        .offset(offset as u64)
+        .offset(offset_value(offset))
         .into_model::<UserRow>()
         .all(db)
         .await?;
@@ -503,23 +504,32 @@ pub(crate) async fn users_page(
     Ok(UsersPage { total, items })
 }
 
+const SEARCH_TRACKS: &str = r"
+    SELECT track_index, artist_index, track_name, artist_name
+    FROM tracks
+    WHERE track_name LIKE ? ESCAPE '\' OR artist_name LIKE ? ESCAPE '\'
+    ORDER BY artist_name ASC, track_name ASC
+    LIMIT ?";
+
 /// Tracks whose title or artist contains the text (SQLite LIKE ignores case for ASCII).
 pub(crate) async fn search_tracks(
     db: &DatabaseConnection,
     text: &str,
     limit: usize,
 ) -> Result<Vec<Track>, DbError> {
-    let rows = track::Entity::find()
-        .filter(
-            Condition::any()
-                .add(track::Column::TrackName.contains(text))
-                .add(track::Column::ArtistName.contains(text)),
-        )
-        .order_by_asc(track::Column::ArtistName)
-        .order_by_asc(track::Column::TrackName)
-        .limit(limit as u64)
-        .all(db)
-        .await?;
+    // `%`, `_` and `\` in the text are matched literally, like in /artists
+    let pattern = contains_pattern(text);
+    let rows = track::Model::find_by_statement(statement(
+        db,
+        SEARCH_TRACKS,
+        [
+            Value::from(pattern.clone()),
+            Value::from(pattern),
+            bound(limit),
+        ],
+    ))
+    .all(db)
+    .await?;
     Ok(rows.into_iter().map(track_from).collect())
 }
 

@@ -7,6 +7,37 @@ pub mod file;
 use std::fmt;
 use std::time::Duration;
 
+/// A value that must not reach a log line: `Debug` prints `<hidden>`.
+/// Read it with [`Secret::expose`] only where it is really used.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    /// The value itself.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// The value, consuming the wrapper.
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<hidden>")
+    }
+}
+
 /// How the API protects itself. [`Default`] suits a local run.
 #[derive(Clone, PartialEq)]
 pub struct ServerSettings {
@@ -64,5 +95,13 @@ mod tests {
         let text = format!("{settings:?}");
         assert!(!text.contains("secret-value"));
         assert!(text.contains("<hidden>"));
+    }
+
+    #[test]
+    fn a_secret_hides_itself_in_debug_output() {
+        let secret = Secret::from("secret-value".to_string());
+        assert_eq!(format!("{secret:?}"), "<hidden>");
+        assert_eq!(format!("{:?}", Some(&secret)), "Some(<hidden>)");
+        assert_eq!(secret.expose(), "secret-value");
     }
 }

@@ -24,6 +24,12 @@ pub(crate) fn bound(value: usize) -> Value {
     Value::from(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
+/// An `OFFSET` for the query builder. It binds the number as i64 and panics
+/// for a larger one, so a huge value is cut to `i64::MAX` (an empty page).
+pub(crate) fn offset_value(value: usize) -> u64 {
+    u64::try_from(i64::try_from(value).unwrap_or(i64::MAX)).unwrap_or(0)
+}
+
 /// A `LIKE` pattern that matches `text` anywhere. `%`, `_` and `\` in the text
 /// are matched literally; the query must say `ESCAPE '\'`.
 pub(crate) fn contains_pattern(text: &str) -> String {
@@ -93,6 +99,13 @@ mod tests {
     fn like_wildcards_in_the_text_are_escaped() {
         assert_eq!(contains_pattern("ab"), "%ab%");
         assert_eq!(contains_pattern("100%_x\\"), "%100\\%\\_x\\\\%");
+    }
+
+    #[test]
+    fn a_huge_offset_stays_within_i64() {
+        assert_eq!(offset_value(0), 0);
+        assert_eq!(offset_value(5), 5);
+        assert!(i64::try_from(offset_value(usize::MAX)).is_ok());
     }
 
     #[test]

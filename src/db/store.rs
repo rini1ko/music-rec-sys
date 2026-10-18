@@ -267,6 +267,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn like_wildcards_in_a_search_are_matched_literally() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store
+            .add_tracks(vec![
+                named(1, "100% Pure", "Band"),
+                named(2, "Snake_Charmer", "Band"),
+                named(3, "Plain", "Band"),
+            ])
+            .await
+            .unwrap();
+
+        // `%%` used to match every track
+        assert!(store.search_tracks("%%", 10).await.unwrap().is_empty());
+        let percent = store.search_tracks("0%", 10).await.unwrap();
+        assert_eq!(percent.iter().map(|t| t.track_index).collect::<Vec<_>>(), [1]);
+        // `_` is not "any character" any more
+        assert!(store.search_tracks("Snake-Charmer", 10).await.unwrap().is_empty());
+        assert_eq!(store.search_tracks("ke_ch", 10).await.unwrap().len(), 1);
+        assert!(store.search_tracks("S_ake", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_offset_beyond_i64_gives_an_empty_page() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store.add_users(vec![user(1)]).await.unwrap();
+
+        let page = store.users_page(10, usize::MAX).await.unwrap();
+        assert_eq!(page.total, 1);
+        assert!(page.items.is_empty());
+    }
+
+    #[tokio::test]
     async fn new_users_get_the_next_index() {
         let store = Store::open("sqlite::memory:").await.unwrap();
         let first = store

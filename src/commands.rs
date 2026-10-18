@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use music_recommendation_system::api::{self, state::AppState};
+use music_recommendation_system::config::Secret;
 use music_recommendation_system::config::file::{FileConfig, ServeConfig, ServerSection};
 use music_recommendation_system::db::memory::MemoryRepository;
 use music_recommendation_system::db::repository::Repository;
@@ -46,8 +47,8 @@ pub fn run(command: Option<Command>) -> Result<()> {
 
 fn print_report(report: &LoadReport) {
     println!(
-        "rows loaded: {}, skipped: {}",
-        report.rows_loaded, report.rows_skipped
+        "rows loaded: {}, skipped: {}, repeated plays: {}",
+        report.rows_loaded, report.rows_skipped, report.duplicate_events
     );
     for message in &report.first_errors {
         println!("  skipped row: {message}");
@@ -139,7 +140,7 @@ fn serve(args: &ServeArgs) -> Result<()> {
         log_dir: args.log_dir.clone(),
         retrain_minutes: args.retrain_minutes,
         cors_origins: (!args.cors_origins.is_empty()).then(|| args.cors_origins.clone()),
-        api_key: args.api_key.clone(),
+        api_key: args.api_key.clone().map(Secret::into_inner),
         rate_per_second: args.rate_per_second,
         rate_burst: args.rate_burst,
         request_timeout_secs: args.request_timeout_secs,
@@ -178,6 +179,7 @@ async fn run_server(args: ServeConfig, config: EngineConfig) -> Result<()> {
     );
 
     let state = AppState::new(store, trained, config).with_settings(args.settings.clone());
+    let shutdown_state = state.clone();
     if args.retrain_minutes > 0 {
         let every = std::time::Duration::from_secs(args.retrain_minutes * 60);
         api::state::spawn_schedule(state.clone(), every);
@@ -197,14 +199,46 @@ async fn run_server(args: ServeConfig, config: EngineConfig) -> Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // open event streams never end by themselves, close them or the
+        // graceful shutdown would wait for them forever
+        shutdown_state.begin_shutdown();
+    })
     .await?;
     tracing::info!("server stopped");
     Ok(())
 }
 
+/// Resolves on Ctrl-C or, on Unix, on SIGTERM. `docker stop` sends SIGTERM and
+/// the binary is PID 1 there, so without it the container is killed after the
+/// timeout in the middle of a request or a retraining.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+    tracing::info!("shutdown signal received");
 }
 
 fn demo() -> Result<()> {

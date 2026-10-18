@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::Duration;
@@ -56,9 +56,13 @@ impl CandidateGenerator for TrendsGenerator {
         Source::Trends
     }
 
-    fn candidates(&self, _context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
+    fn candidates(&self, context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
+        // heard tracks go before the cut, or they would take places the ranker
+        // throws away afterwards
+        let heard: HashSet<u32> = context.history.iter().copied().collect();
         self.current()
             .into_iter()
+            .filter(|(track_index, _)| !heard.contains(track_index))
             .take(limit)
             .map(|(track_index, plays)| Candidate {
                 track_index,
@@ -100,9 +104,15 @@ impl CandidateGenerator for MarkovGenerator {
     }
 
     fn candidates(&self, context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
+        // the model cuts its list at `limit`, so ask for enough to still have
+        // `limit` tracks after the heard ones (often the likeliest) are removed
+        let heard: HashSet<u32> = context.history.iter().copied().collect();
+        let wanted = limit.saturating_add(heard.len());
         self.model
-            .predict_after(&context.history, limit, self.online.as_deref())
+            .predict_after(&context.history, wanted, self.online.as_deref())
             .into_iter()
+            .filter(|(track_index, _)| !heard.contains(track_index))
+            .take(limit)
             .map(|(track_index, probability)| Candidate {
                 track_index,
                 score: probability,
@@ -137,11 +147,17 @@ impl CandidateGenerator for CoListeningGenerator {
 
     fn candidates(&self, context: &RecommendationContext, limit: usize) -> Vec<Candidate> {
         let start = context.history.len().saturating_sub(self.recent_tracks);
+        let heard: HashSet<u32> = context.history.iter().copied().collect();
         let mut scores: HashMap<u32, f64> = HashMap::new();
 
         for &track in &context.history[start..] {
-            for (similar, similarity) in self.graph.similar(track, limit) {
-                *scores.entry(similar).or_default() += similarity;
+            // the recent tracks are each other's strongest neighbours, so ask
+            // for enough to still have `limit` tracks without the heard ones
+            let wanted = limit.saturating_add(heard.len());
+            for (similar, similarity) in self.graph.similar(track, wanted) {
+                if !heard.contains(&similar) {
+                    *scores.entry(similar).or_default() += similarity;
+                }
             }
         }
 
@@ -301,9 +317,34 @@ mod tests {
         let candidates = generator.candidates(&context(&[2, 3]), 10);
 
         // only track 3 is used: 1 is 2/3 similar, 2 is 1/3 similar
-        assert_eq!(candidates.len(), 2);
+        // 2 is heard, so only 1 is left
+        assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].track_index, 1);
         assert!((candidates[0].score - 2.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn heard_tracks_do_not_take_places_of_the_limit() {
+        let tracks = |candidates: Vec<Candidate>| -> Vec<u32> {
+            candidates.iter().map(|c| c.track_index).collect()
+        };
+
+        let co_listening = CoListeningGenerator::new(lenient_graph(), 5);
+        assert_eq!(tracks(co_listening.candidates(&context(&[1, 2]), 1)), [3]);
+
+        // after 2 the likeliest track is 1, which the listener already heard
+        let sessions = [
+            session(&[1, 2]),
+            session(&[2, 1]),
+            session(&[2, 1]),
+            session(&[2, 3]),
+        ];
+        let markov = MarkovGenerator::new(MarkovModel::train(&sessions));
+        assert_eq!(tracks(markov.candidates(&context(&[1, 2]), 1)), [3]);
+
+        let events = [event(1, 0), event(1, 1), event(2, 2)];
+        let trends = TrendsGenerator::new(&events, Duration::days(1), 10);
+        assert_eq!(tracks(trends.candidates(&context(&[1]), 1)), [2]);
     }
 
     #[test]

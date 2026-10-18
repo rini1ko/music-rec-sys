@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use chrono::Duration;
+use chrono::{Duration, NaiveDateTime};
 use thiserror::Error;
 
 use crate::db::error::DbError;
@@ -30,6 +30,9 @@ pub enum EtlError {
 pub struct LoadReport {
     pub rows_loaded: usize,
     pub rows_skipped: usize,
+    /// Rows that repeat a (user, track, timestamp) of an earlier row. Like in
+    /// `etl --append`, the play is stored once.
+    pub duplicate_events: usize,
     pub first_errors: Vec<String>,
     pub users: usize,
     pub tracks: usize,
@@ -60,6 +63,8 @@ pub fn load_from_reader<R: Read>(
     let mut events_by_user: BTreeMap<u32, Vec<ListenEvent>> = BTreeMap::new();
     let mut rows_loaded = 0;
     let mut rows_skipped = 0;
+    let mut duplicate_events = 0;
+    let mut seen: HashSet<(u32, u32, NaiveDateTime)> = HashSet::new();
     let mut first_errors: Vec<String> = Vec::new();
 
     for result in reader.deserialize::<RawListenEvent>() {
@@ -83,10 +88,16 @@ pub fn load_from_reader<R: Read>(
         tracks
             .entry(raw.track_index)
             .or_insert_with(|| Track::from(&raw));
+        let event = ListenEvent::from(&raw);
+        // the same play twice would count double, and `etl --append` skips it
+        if !seen.insert((event.user_index, event.track_index, event.timestamp)) {
+            duplicate_events += 1;
+            continue;
+        }
         events_by_user
             .entry(raw.user_index)
             .or_default()
-            .push(ListenEvent::from(&raw));
+            .push(event);
     }
 
     let mut sessions = Vec::new();
@@ -99,6 +110,7 @@ pub fn load_from_reader<R: Read>(
     let report = LoadReport {
         rows_loaded,
         rows_skipped,
+        duplicate_events,
         first_errors,
         users: users.len(),
         tracks: tracks.len(),
@@ -167,6 +179,17 @@ mod tests {
         assert_eq!(report.rows_loaded, 4);
         assert_eq!(report.rows_skipped, 1);
         assert_eq!(report.first_errors.len(), 1);
+        assert_eq!(repo.counts().unwrap().events, 4);
+    }
+
+    #[test]
+    fn a_repeated_play_is_stored_once() {
+        let repeat = "0,10,100,2009-05-04T12:00:00,A,Song 1,male,30,UK\n";
+        let (repo, report) = load(&format!("{ROWS}{repeat}"));
+
+        assert_eq!(report.rows_loaded, 5);
+        assert_eq!(report.duplicate_events, 1);
+        assert_eq!(report.events, 4);
         assert_eq!(repo.counts().unwrap().events, 4);
     }
 

@@ -1,14 +1,21 @@
 //! Ready recommendation lists (B3). A list depends on the user, the length
 //! and the weights of the request, and on the user's history and the models,
 //! so a new play of the user drops their lists and a retraining drops all.
+//! A play also changes the shared online counts (R1) that every list is ranked
+//! from, so a list is kept only for [`LIST_TTL`]: other listeners see what the
+//! models learned after a short while, not only after a retraining.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::api::dto::RecommendationsResponse;
 use crate::cache::LruCache;
 use crate::recommender::WeightOverrides;
 
 const LOCK: &str = "the cache lock is never poisoned";
+
+/// How long a ready list is served before it is ranked again.
+pub const LIST_TTL: Duration = Duration::from_secs(30);
 
 /// Weights are kept as bits: `f64` is neither `Eq` nor `Hash`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,22 +44,39 @@ impl CacheKey {
 
 #[derive(Debug)]
 pub struct RecommendationCache {
-    lists: Mutex<LruCache<CacheKey, RecommendationsResponse>>,
+    lists: Mutex<LruCache<CacheKey, (Instant, RecommendationsResponse)>>,
+    ttl: Duration,
 }
 
 impl RecommendationCache {
     pub fn new(capacity: usize) -> Self {
+        Self::with_ttl(capacity, LIST_TTL)
+    }
+
+    /// A cache whose lists expire after `ttl`.
+    pub fn with_ttl(capacity: usize, ttl: Duration) -> Self {
         Self {
             lists: Mutex::new(LruCache::new(capacity)),
+            ttl,
         }
     }
 
+    /// The list, unless it is older than the time to live.
     pub fn get(&self, key: &CacheKey) -> Option<RecommendationsResponse> {
-        self.lists.lock().expect(LOCK).get(key)
+        let mut lists = self.lists.lock().expect(LOCK);
+        let (stored, list) = lists.get(key)?;
+        if stored.elapsed() < self.ttl {
+            return Some(list);
+        }
+        lists.remove_where(|other| other == key);
+        None
     }
 
     pub fn insert(&self, key: CacheKey, list: RecommendationsResponse) {
-        self.lists.lock().expect(LOCK).insert(key, list);
+        self.lists
+            .lock()
+            .expect(LOCK)
+            .insert(key, (Instant::now(), list));
     }
 
     /// The user played something: their lists are out of date.
@@ -80,8 +104,30 @@ impl RecommendationCache {
 mod tests {
     use axum::http::StatusCode;
 
+    use super::*;
+
     use crate::api::router;
     use crate::api::test_support::{send, state};
+
+    #[test]
+    fn a_list_expires_after_its_time_to_live() {
+        let list = RecommendationsResponse {
+            user: 1,
+            history_len: 0,
+            items: Vec::new(),
+            bandit_weights: None,
+        };
+        let key = CacheKey::new(1, 3, &WeightOverrides::default());
+
+        let fresh = RecommendationCache::with_ttl(4, Duration::from_secs(60));
+        fresh.insert(key.clone(), list.clone());
+        assert!(fresh.get(&key).is_some());
+
+        let stale = RecommendationCache::with_ttl(4, Duration::ZERO);
+        stale.insert(key.clone(), list);
+        assert!(stale.get(&key).is_none());
+        assert_eq!(stale.stats().2, 0);
+    }
 
     #[tokio::test]
     async fn repeated_requests_come_from_the_cache_until_the_user_plays() {
