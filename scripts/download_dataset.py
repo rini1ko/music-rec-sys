@@ -62,6 +62,7 @@ def download_parquet() -> Path:
 def convert(parquet: Path, out: Path) -> int:
     """Write the parquet file to CSV in batches, so memory stays low."""
     try:
+        import pandas as pd
         import pyarrow.parquet as pq
     except ImportError:
         sys.exit("Missing package. Run: pip install huggingface_hub pandas pyarrow")
@@ -80,6 +81,9 @@ def convert(parquet: Path, out: Path) -> int:
     with open(tmp, "w", newline="", encoding="utf-8") as f:
         for i, batch in enumerate(pf.iter_batches(batch_size=200_000, columns=COLUMNS)):
             df = batch.to_pandas()[COLUMNS]
+            # ETL expects ISO 8601 with a 'T' (2009-05-04T13:06:09) and an integer age.
+            df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+            df["age"] = df["age"].astype("Int64")
             df.to_csv(f, index=False, header=(i == 0), lineterminator="\n")
             rows += len(df)
             print(f"  {rows:,} rows written", end="\r")

@@ -7,6 +7,8 @@ It learns from Last.fm listening history, combines five models with a set of
 rules into one ranked list and explains every recommended track. It runs as a
 command-line tool and as an HTTP API.
 
+AI was used in making this project
+
 ## Features
 
 - **Five models** merged by a weighted ranker: trends, a Markov chain, a
