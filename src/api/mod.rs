@@ -396,7 +396,7 @@ mod tests {
 
     #[tokio::test]
     async fn weights_can_be_changed_per_request() {
-        let silent = "/recommendations?user=1&trends=0&markov=0&co_listening=0&cf=0";
+        let silent = "/recommendations?user=1&trends=0&markov=0&co_listening=0&cf=0&mf=0";
         let (status, body) = get_json(silent).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body["items"].as_array().unwrap().is_empty());

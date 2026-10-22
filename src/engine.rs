@@ -211,11 +211,11 @@ mod tests {
         let recommendations = ranker.recommend(&context, 5);
 
         // user 2 only heard track 1, so track 2 is the only candidate left;
-        // all four models vote for it: 0.1 + 0.2 + 0.4 + 0.3
+        // all five models vote for it: 0.1 + 0.2 + 0.4 + 0.15 + 0.15
         assert_eq!(recommendations.len(), 1);
         assert_eq!(recommendations[0].track_index, 2);
         assert!((recommendations[0].score - 1.0).abs() < 1e-9);
-        assert_eq!(recommendations[0].reasons.len(), 4);
+        assert_eq!(recommendations[0].reasons.len(), 5);
     }
 
     #[test]
