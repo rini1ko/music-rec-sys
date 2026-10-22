@@ -1,0 +1,36 @@
+# Copy to config.toml and change what you need. Every key is optional.
+# Priority: command line > MUSIC_* environment variables > this file > defaults.
+
+[server]
+db = "data/big.db"
+addr = "127.0.0.1:3000"
+log_dir = "logs"
+# retrain the models every N minutes, 0 = only on POST /model/retrain
+retrain_minutes = 0
+cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+# required in x-api-key for POST /events, POST /users and POST /model/*;
+# leave it out to keep them open (local development)
+# api_key = "change-me"
+# average requests per second per client, 0 turns the limit off
+rate_per_second = 20
+rate_burst = 40
+request_timeout_secs = 30
+body_limit_bytes = 65536
+# ready recommendation lists kept in memory, 0 turns the cache off
+cache_capacity = 1024
+
+[engine]
+# relaxed thresholds for tiny datasets such as data/sample.csv
+lenient = false
+trend_window_hours = 24
+session_gap_minutes = 30
+# 1: the next track follows the last one; 2: the last two, falling back to one
+markov_order = 1
+
+[engine.weights]
+trends = 0.1
+markov = 0.2
+co_listening = 0.4
+cf = 0.3
+# matrix factorization, off unless given a weight
+mf = 0.0

@@ -1,0 +1,10 @@
+target
+frontend
+logs
+.git
+.github
+# only the sample goes into the image, the full dataset is gigabytes
+data/*
+!data/sample.csv
+# may hold the API key
+config.toml

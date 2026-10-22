@@ -1,0 +1,526 @@
+use anyhow::{Context, Result, bail};
+use chrono::Duration;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::fs::File;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::time::Instant;
+
+use music_recommendation_system::api::{self, state::AppState};
+use music_recommendation_system::config::Secret;
+use music_recommendation_system::config::file::{FileConfig, ServeConfig, ServerSection};
+use music_recommendation_system::db::memory::MemoryRepository;
+use music_recommendation_system::db::repository::Repository;
+use music_recommendation_system::db::sea_repository::SeaOrmRepository;
+use music_recommendation_system::db::store::Store;
+use music_recommendation_system::engine::{EngineConfig, build_ranker};
+use music_recommendation_system::etl::loader::{LoadReport, load_from_path, load_from_reader};
+use music_recommendation_system::evaluation::compare::compare_models;
+use music_recommendation_system::evaluation::split::SplitMode;
+use music_recommendation_system::evaluation::tuning::tune;
+use music_recommendation_system::evaluation::{EvalConfig, Evaluator};
+use music_recommendation_system::models::candidate::RecommendationContext;
+
+use crate::cli::{
+    Command, DEFAULT_DATA, DataArgs, EtlArgs, EvalArgs, RecommendArgs, ServeArgs, TuneArgs,
+};
+use crate::logging;
+use crate::tools;
+
+pub fn run(command: Option<Command>) -> Result<()> {
+    match command {
+        None => demo(),
+        Some(Command::Stats(args)) => stats(&args),
+        Some(Command::Recommend(args)) => recommend(&args),
+        Some(Command::Eval(args)) => eval(&args),
+        Some(Command::Tune(args)) => tune_weights(&args),
+        Some(Command::Backtest(args)) => tools::backtest(&args),
+        Some(Command::Etl(args)) => etl(&args),
+        Some(Command::Serve(args)) => serve(&args),
+        Some(Command::Simulate(args)) => tools::simulate_load(&args),
+        Some(Command::Bench(args)) => tools::bench(&args),
+        Some(Command::Migrate(args)) => tools::migrate(&args),
+        Some(Command::Export(args)) => tools::export(&args),
+        Some(Command::ResetDb(args)) => tools::reset(&args),
+    }
+}
+
+fn print_report(report: &LoadReport) {
+    println!(
+        "rows loaded: {}, skipped: {}, repeated plays: {}",
+        report.rows_loaded, report.rows_skipped, report.duplicate_events
+    );
+    for message in &report.first_errors {
+        println!("  skipped row: {message}");
+    }
+}
+
+pub(crate) fn load_csv(path: &str) -> Result<MemoryRepository> {
+    let mut repo = MemoryRepository::default();
+    let report = load_from_path(path, &mut repo, Duration::minutes(30))
+        .with_context(|| format!("failed to load {path}"))?;
+    print_report(&report);
+    Ok(repo)
+}
+
+/// The database if `--db` is given, otherwise the CSV loaded into memory.
+pub(crate) fn open(args: &DataArgs) -> Result<Box<dyn Repository>> {
+    let Some(db) = &args.db else {
+        return Ok(Box::new(load_csv(&args.path)?));
+    };
+    if !Path::new(db).exists() {
+        bail!("database {db} not found, run `etl` first");
+    }
+    let repo =
+        SeaOrmRepository::open(&sqlite_url(db)).with_context(|| format!("failed to open {db}"))?;
+    println!("reading from {db}");
+    Ok(Box::new(repo))
+}
+
+/// Relative paths only: a Windows `C:\...` path does not fit a sqlite URL.
+pub(crate) fn sqlite_url(path: &str) -> String {
+    format!("sqlite://{path}?mode=rwc")
+}
+
+fn progress_bar(total_bytes: u64) -> ProgressBar {
+    let bar = ProgressBar::new(total_bytes);
+    bar.set_style(
+        ProgressStyle::with_template("reading [{bar:40}] {bytes}/{total_bytes} eta {eta}")
+            .expect("the template is valid")
+            .progress_chars("=> "),
+    );
+    bar
+}
+
+fn etl(args: &EtlArgs) -> Result<()> {
+    if args.append {
+        return tools::etl_append(args);
+    }
+    let mut repo = SeaOrmRepository::open(&sqlite_url(&args.db))
+        .with_context(|| format!("failed to open {}", args.db))?;
+
+    // loading twice would duplicate every event and session
+    if repo.counts()?.events > 0 {
+        bail!(
+            "{} already contains data, use --append, reset-db or another --db",
+            args.db
+        );
+    }
+
+    let gap = Duration::minutes(args.gap as i64);
+    let file = File::open(&args.path).with_context(|| format!("failed to open {}", args.path))?;
+    let bar = progress_bar(file.metadata()?.len());
+    let started = Instant::now();
+
+    let report = load_from_reader(bar.wrap_read(file), &mut repo, gap)
+        .with_context(|| format!("failed to load {}", args.path))?;
+    bar.finish_and_clear();
+
+    print_report(&report);
+    println!("done in {:.1}s", started.elapsed().as_secs_f32());
+
+    let counts = repo.counts()?;
+    println!(
+        "stored in {}: users {}, tracks {}, events {}, sessions {}",
+        args.db, counts.users, counts.tracks, counts.events, counts.sessions
+    );
+    Ok(())
+}
+
+fn serve(args: &ServeArgs) -> Result<()> {
+    let file =
+        FileConfig::locate(args.config.as_deref()).context("failed to load the config file")?;
+    let config = file
+        .engine
+        .engine_config(args.lenient)
+        .context("invalid [engine] settings")?;
+    let cli = ServerSection {
+        db: args.db.clone(),
+        addr: args.addr.clone(),
+        log_dir: args.log_dir.clone(),
+        retrain_minutes: args.retrain_minutes,
+        cors_origins: (!args.cors_origins.is_empty()).then(|| args.cors_origins.clone()),
+        api_key: args.api_key.clone().map(Secret::into_inner),
+        rate_per_second: args.rate_per_second,
+        rate_burst: args.rate_burst,
+        request_timeout_secs: args.request_timeout_secs,
+        body_limit_bytes: args.body_limit_bytes,
+        cache_capacity: args.cache_capacity,
+    };
+    let serve = cli
+        .or(file.server)
+        .finish()
+        .context("invalid server settings")?;
+
+    if !Path::new(&serve.db).exists() {
+        bail!("database {} not found, run `etl` first", serve.db);
+    }
+    let _log_guard = logging::init(&serve.log_dir);
+    tokio::runtime::Runtime::new()?.block_on(run_server(serve, config))
+}
+
+async fn run_server(args: ServeConfig, config: EngineConfig) -> Result<()> {
+    let store = Store::open(&sqlite_url(&args.db))
+        .await
+        .with_context(|| format!("failed to open {}", args.db))?;
+
+    if args.settings.api_key.is_none() {
+        tracing::warn!("no API key is set, writes and /model/* are open to anyone");
+    }
+    tracing::info!(settings = ?args.settings, "training the models");
+    let trained = api::state::train(&store, config.clone())
+        .await
+        .context("failed to train the models")?;
+    tracing::info!(
+        seconds = trained.seconds,
+        events = trained.events,
+        sessions = trained.sessions,
+        "models are ready"
+    );
+
+    let state = AppState::new(store, trained, config).with_settings(args.settings.clone());
+    let shutdown_state = state.clone();
+    if args.retrain_minutes > 0 {
+        let every = std::time::Duration::from_secs(args.retrain_minutes * 60);
+        api::state::spawn_schedule(state.clone(), every);
+        tracing::info!(minutes = args.retrain_minutes, "scheduled retraining is on");
+    }
+
+    let cors = api::cors(&args.cors_origins).context("invalid --cors-origin")?;
+    let app = api::router(state).layer(cors);
+
+    let listener = tokio::net::TcpListener::bind(&args.addr)
+        .await
+        .with_context(|| format!("cannot listen on {}", args.addr))?;
+    tracing::info!(addr = %args.addr, db = %args.db, "server started");
+
+    // the client address is what the rate limit counts by
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // open event streams never end by themselves, close them or the
+        // graceful shutdown would wait for them forever
+        shutdown_state.begin_shutdown();
+    })
+    .await?;
+    tracing::info!("server stopped");
+    Ok(())
+}
+
+/// Resolves on Ctrl-C or, on Unix, on SIGTERM. `docker stop` sends SIGTERM and
+/// the binary is PID 1 there, so without it the container is killed after the
+/// timeout in the middle of a request or a retraining.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+    tracing::info!("shutdown signal received");
+}
+
+fn demo() -> Result<()> {
+    println!("demo on {DEFAULT_DATA} (run with --help to see all commands)\n");
+    recommend(&RecommendArgs {
+        data: DataArgs {
+            path: DEFAULT_DATA.to_string(),
+            db: None,
+        },
+        user: 2,
+        top: 3,
+        lenient: true,
+    })
+}
+
+fn stats(args: &DataArgs) -> Result<()> {
+    let repo = open(args)?;
+    let counts = repo.counts()?;
+    println!(
+        "users: {}, tracks: {}, events: {}, sessions: {}",
+        counts.users, counts.tracks, counts.events, counts.sessions
+    );
+    Ok(())
+}
+
+fn recommend(args: &RecommendArgs) -> Result<()> {
+    let repo = open(&args.data)?;
+
+    let Some(user) = repo.get_user(args.user)? else {
+        let source = args.data.db.as_deref().unwrap_or(&args.data.path);
+        bail!("user {} is not in {source}", args.user);
+    };
+
+    let config = if args.lenient {
+        EngineConfig::lenient()
+    } else {
+        EngineConfig::default()
+    };
+    let ranker = build_ranker(repo.as_ref(), &config)?;
+
+    let history = repo.user_history(args.user)?;
+    let country = user.country.as_deref().unwrap_or("unknown country");
+    println!(
+        "\nrecommendations for user {} ({country}), {} tracks in history",
+        args.user,
+        history.len()
+    );
+
+    let recommendations = ranker.recommend(&RecommendationContext { history }, args.top);
+    if recommendations.is_empty() {
+        println!("  nothing to recommend, try --lenient for a small file");
+        return Ok(());
+    }
+
+    for (position, rec) in recommendations.iter().enumerate() {
+        let track = repo.get_track(rec.track_index)?;
+        let title = track
+            .as_ref()
+            .and_then(|t| t.track_name.as_deref())
+            .unwrap_or("unknown track");
+        let artist = track
+            .as_ref()
+            .and_then(|t| t.artist_name.as_deref())
+            .unwrap_or("unknown artist");
+
+        println!(
+            "{:>3}. {title} - {artist}  (score {:.3})",
+            position + 1,
+            rec.score
+        );
+        println!("     {}", rec.explain());
+    }
+    Ok(())
+}
+
+/// Loads the CSV and prepares an evaluator: the models are trained once here.
+fn prepare(args: &EvalArgs) -> Result<Evaluator> {
+    let repo = open(&args.data)?;
+    let events = repo.all_events()?;
+
+    let split = if args.global {
+        SplitMode::Global
+    } else {
+        SplitMode::PerUser
+    };
+    let config = EvalConfig {
+        k: args.k,
+        split,
+        ..EvalConfig::default()
+    };
+    let evaluator = Evaluator::new(&events, &config, &EngineConfig::default())?
+        .with_catalog(&repo.all_tracks()?, &repo.all_users()?);
+
+    let summary = evaluator.run();
+    println!(
+        "split: {split:?}, train events: {}, test events: {}",
+        summary.train_events, summary.test_events
+    );
+    println!(
+        "users evaluated: {} (skipped: {} without history, {} with nothing new)",
+        evaluator.case_count(),
+        summary.skipped_cold_start,
+        summary.skipped_nothing_new
+    );
+    Ok(evaluator)
+}
+
+/// Compares every model alone and the hybrid.
+fn eval(args: &EvalArgs) -> Result<()> {
+    let mut evaluator = prepare(args)?;
+    for score in compare_models(&mut evaluator, EngineConfig::default().weights) {
+        println!("{:<14} {}", score.model, score.report);
+    }
+    let cold = evaluator.cold_case_count();
+    if cold > 0 {
+        println!("hybrid_rules also judges {cold} users without training plays (cold start)");
+    }
+    Ok(())
+}
+
+/// Tries many weight combinations: picks on half of the users, checks on the other half.
+fn tune_weights(args: &TuneArgs) -> Result<()> {
+    let mut evaluator = prepare(&args.eval)?;
+    let default = EngineConfig::default().weights;
+    let tuned = tune(&mut evaluator, args.steps, default, args.show);
+
+    println!("\ntop {} on the tuning half:", tuned.top.len());
+    for (weights, report) in &tuned.top {
+        println!(
+            "  {weights}   ndcg {:.4}  hit {:.4}",
+            report.ndcg, report.hit_rate
+        );
+    }
+
+    println!("\n{:<26} {:>12} {:>12}", "", "tuning half", "other half");
+    println!(
+        "{:<26} {:>12.4} {:>12.4}",
+        "default weights (ndcg)", tuned.default_tuning.ndcg, tuned.default_holdout.ndcg
+    );
+    println!(
+        "{:<26} {:>12.4} {:>12.4}",
+        "best weights (ndcg)", tuned.best_tuning.ndcg, tuned.best_holdout.ndcg
+    );
+    println!("\nbest: {}", tuned.best);
+    println!("the number in the last column is the honest one");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> DataArgs {
+        DataArgs {
+            path: DEFAULT_DATA.to_string(),
+            db: None,
+        }
+    }
+
+    fn recommend_args(user: u32) -> RecommendArgs {
+        RecommendArgs {
+            data: sample(),
+            user,
+            top: 3,
+            lenient: true,
+        }
+    }
+
+    #[test]
+    fn demo_runs_on_the_sample_file() {
+        demo().unwrap();
+    }
+
+    #[test]
+    fn recommend_works_for_a_known_user() {
+        recommend(&recommend_args(2)).unwrap();
+    }
+
+    #[test]
+    fn recommend_explains_an_unknown_user() {
+        let error = recommend(&recommend_args(999_999)).unwrap_err();
+        assert!(error.to_string().contains("999999"));
+    }
+
+    #[test]
+    fn missing_file_error_names_the_file() {
+        let error = stats(&DataArgs {
+            path: "data/no-such-file.csv".to_string(),
+            db: None,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("no-such-file.csv"));
+    }
+
+    #[test]
+    fn stats_works_on_the_sample_file() {
+        stats(&sample()).unwrap();
+    }
+
+    #[test]
+    fn eval_and_tune_run_on_the_sample_file() {
+        let eval_args = || EvalArgs {
+            data: sample(),
+            global: false,
+            k: 5,
+        };
+        eval(&eval_args()).unwrap();
+        tune_weights(&TuneArgs {
+            eval: eval_args(),
+            steps: 2,
+            show: 3,
+        })
+        .unwrap();
+    }
+    #[test]
+    fn etl_fills_a_database_only_once() {
+        let path = format!("target/etl-test-{}.db", std::process::id());
+        let _ = std::fs::remove_file(&path);
+        let args = EtlArgs {
+            path: DEFAULT_DATA.to_string(),
+            db: path.clone(),
+            gap: 30,
+            append: false,
+        };
+
+        etl(&args).unwrap();
+        let error = etl(&args).unwrap_err();
+        assert!(error.to_string().contains("already contains data"));
+        // with --append the same file adds nothing and does not fail
+        etl(&EtlArgs {
+            append: true,
+            ..args
+        })
+        .unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+    #[test]
+    fn commands_can_read_from_the_database() {
+        let path = format!("target/db-read-test-{}.db", std::process::id());
+        let _ = std::fs::remove_file(&path);
+        etl(&EtlArgs {
+            path: DEFAULT_DATA.to_string(),
+            db: path.clone(),
+            gap: 30,
+            append: false,
+        })
+        .unwrap();
+
+        let from_db = DataArgs {
+            path: DEFAULT_DATA.to_string(),
+            db: Some(path.clone()),
+        };
+        stats(&from_db).unwrap();
+        recommend(&RecommendArgs {
+            data: from_db,
+            user: 2,
+            top: 3,
+            lenient: true,
+        })
+        .unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn missing_database_is_reported() {
+        let args = DataArgs {
+            path: DEFAULT_DATA.to_string(),
+            db: Some("target/no-such.db".to_string()),
+        };
+        let error = stats(&args).unwrap_err();
+        assert!(error.to_string().contains("run `etl` first"));
+    }
+
+    #[test]
+    fn serve_needs_an_existing_database() {
+        let error = serve(&ServeArgs {
+            db: Some("target/no-such.db".to_string()),
+            ..ServeArgs::default()
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("run `etl` first"));
+    }
+}
